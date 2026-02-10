@@ -1316,7 +1316,7 @@ class EventStoreDBEventStorageEngineTest {
 
     @Test
     void shouldHandleMessageBasedStreamNotFound() throws Exception {
-        // ExecutionException wrapping RuntimeException("stream not found") 
+        // ExecutionException wrapping RuntimeException("stream not found")
         // instead of StreamNotFoundException
         CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
         failFuture.completeExceptionally(new RuntimeException("stream not found in EventStoreDB"));

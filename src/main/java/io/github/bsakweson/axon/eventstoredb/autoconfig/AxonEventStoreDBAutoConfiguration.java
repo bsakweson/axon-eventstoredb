@@ -114,7 +114,7 @@ public class AxonEventStoreDBAutoConfiguration {
   @ConditionalOnClass(MeterRegistry.class)
   static class MetricsAutoConfiguration {
 
-    private static final Logger metricsLog =
+    private static final Logger log =
         LoggerFactory.getLogger(MetricsAutoConfiguration.class);
 
     @Bean
@@ -124,7 +124,7 @@ public class AxonEventStoreDBAutoConfiguration {
         prefix = "axon.eventstoredb.metrics", name = "enabled",
         havingValue = "true", matchIfMissing = true)
     public EventStoreDBMetrics eventStoreDBMetrics(MeterRegistry meterRegistry) {
-      metricsLog.info("Configuring EventStoreDB Micrometer metrics");
+      log.info("Configuring EventStoreDB Micrometer metrics");
       return new EventStoreDBMetrics(meterRegistry);
     }
   }
