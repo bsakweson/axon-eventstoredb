@@ -17,6 +17,9 @@ A Spring Boot starter that integrates [EventStoreDB](https://www.eventstore.com/
 - **Category Projections** — Follows EventStoreDB's `{Type}-{Id}` stream naming convention for built-in `$ce-{Type}` projections
 - **Snapshot Support** — Dedicated snapshot streams per aggregate
 - **Jackson Serialization** — Axon metadata preserved in EventStoreDB event metadata
+- **Event Upcasting** — Axon's `EventUpcaster` chain applied during event reads
+- **Connection Resilience** — Configurable retry with exponential backoff and jitter
+- **Micrometer Metrics** — Optional instrumentation of append/read/token operations
 
 ## Requirements
 
@@ -34,15 +37,15 @@ A Spring Boot starter that integrates [EventStoreDB](https://www.eventstore.com/
 **Gradle:**
 
 ```groovy
-implementation 'com.bakalr.axon:axon-eventstoredb-spring-boot-starter:0.1.0'
+implementation 'io.github.bsakweson:axon-eventstoredb:0.1.0'
 ```
 
 **Maven:**
 
 ```xml
 <dependency>
-    <groupId>com.bakalr.axon</groupId>
-    <artifactId>axon-eventstoredb-spring-boot-starter</artifactId>
+    <groupId>io.github.bsakweson</groupId>
+    <artifactId>axon-eventstoredb</artifactId>
     <version>0.1.0</version>
 </dependency>
 ```
@@ -98,6 +101,12 @@ Events are stored in stream `Order-{orderId}` in EventStoreDB.
 | `axon.eventstoredb.snapshot-stream-prefix` | `__snapshot` | Prefix for snapshot streams |
 | `axon.eventstoredb.token-stream-prefix` | `__axon-tokens` | Prefix for token streams |
 | `axon.eventstoredb.node-id` | (random UUID) | Node identifier for token claim management |
+| `axon.eventstoredb.retry.enabled` | `true` | Enable retry with exponential backoff |
+| `axon.eventstoredb.retry.max-retries` | `3` | Maximum retry attempts |
+| `axon.eventstoredb.retry.initial-backoff-ms` | `100` | Initial backoff in milliseconds |
+| `axon.eventstoredb.retry.max-backoff-ms` | `5000` | Maximum backoff cap in milliseconds |
+| `axon.eventstoredb.retry.multiplier` | `2.0` | Backoff multiplier per retry |
+| `axon.eventstoredb.metrics.enabled` | `true` | Enable Micrometer metrics (requires `micrometer-core`) |
 
 ## Architecture
 
@@ -282,6 +291,23 @@ graph TD
             ser["EventStoreDBSerializer"]
             naming["EventStoreDBStreamNaming"]
         end
+
+        subgraph resilience["Resilience"]
+            style resilience fill:#fdecea,stroke:#e74c3c,rx:12,ry:12,color:#1a1a1a
+            retry["RetryPolicy"]
+            retryExec["EventStoreDBRetryExecutor"]
+        end
+
+        subgraph metrics["Metrics"]
+            style metrics fill:#dceefb,stroke:#4a90d9,rx:12,ry:12,color:#1a1a1a
+            met["EventStoreDBMetrics"]
+        end
+
+        subgraph upcasting["Upcasting"]
+            style upcasting fill:#e8f8e8,stroke:#5cb85c,rx:12,ry:12,color:#1a1a1a
+            ded["EventStoreDBDomainEventData"]
+            ted["EventStoreDBTrackedDomainEventData"]
+        end
     end
 
     autoconf --> engine2
@@ -289,6 +315,9 @@ graph TD
     engine2 --> tracking
     engine2 --> ser
     engine2 --> naming
+    engine2 --> retryExec
+    engine2 --> ded
+    token2 --> retryExec
 ```
 
 ## Dependencies
@@ -296,11 +325,12 @@ graph TD
 | Dependency | Purpose |
 | ---------- | ------- |
 | `axon-eventsourcing:4.11.2` | `EventStorageEngine`, `DomainEventData`, `TrackingToken` |
-| `axon-messaging:4.11.2` | `EventMessage`, `MetaData`, `Serializer` |
+| `axon-messaging:4.11.2` | `EventMessage`, `MetaData`, `Serializer`, `EventUpcaster` |
 | `axon-configuration:4.11.2` | `EventProcessingConfigurer` |
 | `db-client-java:5.4.5` | EventStoreDB gRPC client |
 | `spring-boot-autoconfigure` | `@AutoConfiguration`, `@ConditionalOnClass` |
 | `jackson-databind` | JSON serialization for event payloads |
+| `micrometer-core` | Optional Micrometer metrics (compile-only) |
 
 ## Development
 
@@ -356,8 +386,8 @@ graph LR
             p1d["Auto-Configuration"]
         end
 
-        subgraph phase2["Phase 2 — Hardening"]
-            style phase2 fill:#fef9e7,stroke:#f0c040,rx:12,ry:12,color:#1a1a1a
+        subgraph phase2["Phase 2 — Hardening (Done)"]
+            style phase2 fill:#e8f8e8,stroke:#5cb85c,rx:12,ry:12,color:#1a1a1a
             p2a["Event Upcasting"]
             p2b["Connection Resilience"]
             p2c["Micrometer Metrics"]

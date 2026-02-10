@@ -2,15 +2,23 @@ package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
 import io.github.bsakweson.axon.eventstoredb.EventStoreDBEventStorageEngine;
 import io.github.bsakweson.axon.eventstoredb.EventStoreDBTokenStore;
+import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
+import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
+import io.github.bsakweson.axon.eventstoredb.resilience.RetryPolicy;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;
+
+import java.util.UUID;
+
 import org.axonframework.eventhandling.tokenstore.TokenStore;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
 import org.axonframework.serialization.Serializer;
+import org.axonframework.serialization.upcasting.event.EventUpcaster;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
@@ -19,8 +27,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-
-import java.util.UUID;
 
 /**
  * Spring Boot auto-configuration for Axon Framework EventStoreDB integration.
@@ -35,7 +41,7 @@ import java.util.UUID;
  * <ul>
  *   <li>{@link EventStoreDBClient} — gRPC client</li>
  *   <li>{@link EventStoreDBStreamNaming} — stream naming conventions</li>
- *   <li>{@code EventStoreDBSerializer} — Axon ↔ EventStoreDB serialization bridge (used internally)</li>
+ *   <li>{@link EventStoreDBRetryExecutor} — retry with exponential backoff</li>
  *   <li>{@link EventStorageEngine} — EventStoreDB-backed event storage</li>
  *   <li>{@link TokenStore} — EventStoreDB-backed tracking token store</li>
  * </ul>
@@ -74,6 +80,26 @@ public class AxonEventStoreDBAutoConfiguration {
         properties.getTokenStreamPrefix());
   }
 
+  // ── Retry Executor ─────────────────────────────────────────────────────
+
+  @Bean
+  @ConditionalOnMissingBean
+  public EventStoreDBRetryExecutor eventStoreDBRetryExecutor(EventStoreDBProperties properties) {
+    EventStoreDBProperties.Retry retryConfig = properties.getRetry();
+    if (!retryConfig.isEnabled()) {
+      log.info("EventStoreDB retry disabled");
+      return EventStoreDBRetryExecutor.noRetry();
+    }
+    RetryPolicy policy = RetryPolicy.builder()
+        .maxRetries(retryConfig.getMaxRetries())
+        .initialBackoffMs(retryConfig.getInitialBackoffMs())
+        .maxBackoffMs(retryConfig.getMaxBackoffMs())
+        .multiplier(retryConfig.getMultiplier())
+        .build();
+    log.info("Configuring EventStoreDB retry: {}", policy);
+    return new EventStoreDBRetryExecutor(policy);
+  }
+
   // ── Event Storage Engine ───────────────────────────────────────────────
 
   @Bean
@@ -82,10 +108,18 @@ public class AxonEventStoreDBAutoConfiguration {
       EventStoreDBClient client,
       @Qualifier("eventSerializer") Serializer eventSerializer,
       EventStoreDBStreamNaming streamNaming,
-      EventStoreDBProperties properties) {
-    log.info("Configuring EventStoreDB EventStorageEngine (batchSize={})", properties.getBatchSize());
+      EventStoreDBProperties properties,
+      EventStoreDBRetryExecutor retryExecutor,
+      @Autowired(required = false) EventUpcaster eventUpcaster,
+      @Autowired(required = false) EventStoreDBMetrics metrics) {
+    log.info(
+        "Configuring EventStoreDB EventStorageEngine (batchSize={}, upcaster={}, metrics={})",
+        properties.getBatchSize(),
+        eventUpcaster != null ? "yes" : "no",
+        metrics != null ? "yes" : "no");
     return new EventStoreDBEventStorageEngine(
-        client, eventSerializer, streamNaming, properties.getBatchSize());
+        client, eventSerializer, streamNaming, properties.getBatchSize(),
+        eventUpcaster, retryExecutor, metrics);
   }
 
   // ── Token Store ────────────────────────────────────────────────────────
@@ -95,11 +129,14 @@ public class AxonEventStoreDBAutoConfiguration {
   public TokenStore tokenStore(
       EventStoreDBClient client,
       EventStoreDBStreamNaming streamNaming,
-      EventStoreDBProperties properties) {
+      EventStoreDBProperties properties,
+      EventStoreDBRetryExecutor retryExecutor,
+      @Autowired(required = false) EventStoreDBMetrics metrics) {
     String nodeId = properties.getNodeId() != null
         ? properties.getNodeId()
         : UUID.randomUUID().toString();
-    return new EventStoreDBTokenStore(client, streamNaming, nodeId);
+    return new EventStoreDBTokenStore(
+        client, streamNaming, nodeId, retryExecutor, metrics);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -108,8 +145,9 @@ public class AxonEventStoreDBAutoConfiguration {
    * Masks credentials in connection strings for safe logging.
    */
   private String maskConnectionString(String connString) {
-    if (connString == null) return "null";
-    // Mask password in esdb://user:password@host pattern
+    if (connString == null) {
+      return "null";
+    }
     return connString.replaceAll("(://[^:]+:)[^@]+(@)", "$1****$2");
   }
 }

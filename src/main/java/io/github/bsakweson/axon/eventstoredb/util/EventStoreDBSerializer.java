@@ -38,14 +38,14 @@ public class EventStoreDBSerializer {
   private static final Logger log = LoggerFactory.getLogger(EventStoreDBSerializer.class);
 
   // Metadata keys stored in EventStoreDB event metadata
-  static final String META_MESSAGE_ID = "axon-message-id";
-  static final String META_PAYLOAD_TYPE = "axon-payload-type";
-  static final String META_PAYLOAD_REVISION = "axon-payload-revision";
-  static final String META_TIMESTAMP = "axon-timestamp";
-  static final String META_AGGREGATE_TYPE = "axon-aggregate-type";
-  static final String META_AGGREGATE_ID = "axon-aggregate-id";
-  static final String META_AGGREGATE_SEQ = "axon-aggregate-seq";
-  static final String META_AXON_METADATA = "axon-metadata";
+  public static final String META_MESSAGE_ID = "axon-message-id";
+  public static final String META_PAYLOAD_TYPE = "axon-payload-type";
+  public static final String META_PAYLOAD_REVISION = "axon-payload-revision";
+  public static final String META_TIMESTAMP = "axon-timestamp";
+  public static final String META_AGGREGATE_TYPE = "axon-aggregate-type";
+  public static final String META_AGGREGATE_ID = "axon-aggregate-id";
+  public static final String META_AGGREGATE_SEQ = "axon-aggregate-seq";
+  public static final String META_AXON_METADATA = "axon-metadata";
 
   private final Serializer eventSerializer;
   private final ObjectMapper objectMapper;

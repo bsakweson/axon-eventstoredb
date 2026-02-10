@@ -69,6 +69,12 @@ public class EventStoreDBProperties {
    */
   private String nodeId;
 
+  /** Retry configuration for transient EventStoreDB failures. */
+  private Retry retry = new Retry();
+
+  /** Micrometer metrics configuration. */
+  private Metrics metrics = new Metrics();
+
   // ── Getters / Setters ──────────────────────────────────────────────────
 
   public boolean isEnabled() {
@@ -175,6 +181,22 @@ public class EventStoreDBProperties {
     this.nodeId = nodeId;
   }
 
+  public Retry getRetry() {
+    return retry;
+  }
+
+  public void setRetry(Retry retry) {
+    this.retry = retry;
+  }
+
+  public Metrics getMetrics() {
+    return metrics;
+  }
+
+  public void setMetrics(Metrics metrics) {
+    this.metrics = metrics;
+  }
+
   /**
    * Builds the effective connection string, either from {@link #connectionString} if set, or from
    * individual host/port/tls properties.
@@ -193,5 +215,103 @@ public class EventStoreDBProperties {
       sb.append("&tlsVerifyCert=false");
     }
     return sb.toString();
+  }
+
+  /**
+   * Retry configuration for transient EventStoreDB connection failures.
+   *
+   * <p>Example:
+   * <pre>
+   * axon:
+   *   eventstoredb:
+   *     retry:
+   *       enabled: true
+   *       max-retries: 3
+   *       initial-backoff-ms: 100
+   *       max-backoff-ms: 5000
+   *       multiplier: 2.0
+   * </pre>
+   */
+  public static class Retry {
+
+    /** Whether retry is enabled. Default: true. */
+    private boolean enabled = true;
+
+    /** Maximum number of retry attempts. Default: 3. */
+    private int maxRetries = 3;
+
+    /** Initial backoff in milliseconds. Default: 100. */
+    private long initialBackoffMs = 100;
+
+    /** Maximum backoff cap in milliseconds. Default: 5000. */
+    private long maxBackoffMs = 5000;
+
+    /** Backoff multiplier after each retry. Default: 2.0. */
+    private double multiplier = 2.0;
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    public int getMaxRetries() {
+      return maxRetries;
+    }
+
+    public void setMaxRetries(int maxRetries) {
+      this.maxRetries = maxRetries;
+    }
+
+    public long getInitialBackoffMs() {
+      return initialBackoffMs;
+    }
+
+    public void setInitialBackoffMs(long initialBackoffMs) {
+      this.initialBackoffMs = initialBackoffMs;
+    }
+
+    public long getMaxBackoffMs() {
+      return maxBackoffMs;
+    }
+
+    public void setMaxBackoffMs(long maxBackoffMs) {
+      this.maxBackoffMs = maxBackoffMs;
+    }
+
+    public double getMultiplier() {
+      return multiplier;
+    }
+
+    public void setMultiplier(double multiplier) {
+      this.multiplier = multiplier;
+    }
+  }
+
+  /**
+   * Micrometer metrics configuration.
+   *
+   * <p>Example:
+   * <pre>
+   * axon:
+   *   eventstoredb:
+   *     metrics:
+   *       enabled: true
+   * </pre>
+   */
+  public static class Metrics {
+
+    /** Whether metrics collection is enabled. Default: true. */
+    private boolean enabled = true;
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
   }
 }

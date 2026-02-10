@@ -1,5 +1,7 @@
 package io.github.bsakweson.axon.eventstoredb;
 
+import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
+import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.DeleteStreamOptions;
@@ -29,6 +31,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
+import jakarta.annotation.Nullable;
+
 import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.eventhandling.tokenstore.TokenStore;
 import org.axonframework.eventhandling.tokenstore.UnableToClaimTokenException;
@@ -40,14 +44,14 @@ import org.slf4j.LoggerFactory;
  * {@link TokenStore} implementation that persists tracking processor tokens in EventStoreDB streams.
  *
  * <p>Each processor's token state is stored in a dedicated stream named
- * {@code __axon-tokens-{processorName}}. Token updates are appended as new events, and the current
- * token is read by fetching the last event in that stream.
+ * {@code __axon-tokens-{processorName}-{segment}}. Token updates are appended as new events, and
+ * the current token is read by fetching the last event in that stream.
  *
- * <p>This approach is append-only and provides a full history of token positions, which is useful
- * for debugging processor progress.
- *
- * <p><b>Claim management:</b> Token claims are managed via a lightweight in-process mechanism.
- * For multi-node deployments, use a distributed lock or switch to a JDBC/JPA token store.
+ * <p><b>Phase 2 features:</b>
+ * <ul>
+ *   <li><b>Connection Resilience</b> — configurable retry with exponential backoff</li>
+ *   <li><b>Micrometer Metrics</b> — optional instrumentation of token operations</li>
+ * </ul>
  */
 public class EventStoreDBTokenStore implements TokenStore {
 
@@ -59,20 +63,55 @@ public class EventStoreDBTokenStore implements TokenStore {
   private final EventStoreDBStreamNaming naming;
   private final ObjectMapper objectMapper;
   private final String nodeId;
+  private final EventStoreDBRetryExecutor retryExecutor;
+  @Nullable private final EventStoreDBMetrics metrics;
 
+  /**
+   * Creates a new token store (backward-compatible constructor).
+   *
+   * @param client the EventStoreDB gRPC client
+   * @param naming stream naming strategy
+   */
   public EventStoreDBTokenStore(EventStoreDBClient client, EventStoreDBStreamNaming naming) {
-    this(client, naming, UUID.randomUUID().toString());
+    this(client, naming, UUID.randomUUID().toString(), null, null);
   }
 
+  /**
+   * Creates a new token store with a specific node ID.
+   *
+   * @param client the EventStoreDB gRPC client
+   * @param naming stream naming strategy
+   * @param nodeId unique node identifier for claim management
+   */
   public EventStoreDBTokenStore(
       EventStoreDBClient client, EventStoreDBStreamNaming naming, String nodeId) {
+    this(client, naming, nodeId, null, null);
+  }
+
+  /**
+   * Creates a new token store with Phase 2 features.
+   *
+   * @param client        the EventStoreDB gRPC client
+   * @param naming        stream naming strategy
+   * @param nodeId        unique node identifier for claim management
+   * @param retryExecutor optional retry executor (may be null)
+   * @param metrics       optional Micrometer metrics (may be null)
+   */
+  public EventStoreDBTokenStore(
+      EventStoreDBClient client,
+      EventStoreDBStreamNaming naming,
+      String nodeId,
+      @Nullable EventStoreDBRetryExecutor retryExecutor,
+      @Nullable EventStoreDBMetrics metrics) {
     this.client = client;
     this.naming = naming != null ? naming : new EventStoreDBStreamNaming();
     this.nodeId = nodeId;
+    this.retryExecutor = retryExecutor != null
+        ? retryExecutor : EventStoreDBRetryExecutor.noRetry();
+    this.metrics = metrics;
     this.objectMapper = new ObjectMapper();
     this.objectMapper.registerModule(new JavaTimeModule());
     this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    // Register the tracking token subtypes
     this.objectMapper.registerSubtypes(EventStoreDBTrackingToken.class);
   }
 
@@ -93,16 +132,26 @@ public class EventStoreDBTokenStore implements TokenStore {
       EventData eventData =
           EventDataBuilder.json(UUID.randomUUID(), TOKEN_EVENT_TYPE, data).build();
 
-      client
-          .appendToStream(
-              streamName, AppendToStreamOptions.get().expectedRevision(ExpectedRevision.any()), eventData)
-          .get();
+      retryExecutor.execute(
+          () -> client.appendToStream(
+              streamName,
+              AppendToStreamOptions.get().expectedRevision(ExpectedRevision.any()),
+              eventData).get(),
+          "storeToken");
 
-      log.trace("Stored token for processor '{}' segment {}: {}", processorName, segment, token);
+      log.trace("Stored token for processor '{}' segment {}: {}",
+          processorName, segment, token);
+
+      if (metrics != null) {
+        metrics.recordTokenOperation("store");
+      }
 
     } catch (JsonProcessingException e) {
       throw new EventStoreException("Failed to serialize tracking token", e);
     } catch (ExecutionException e) {
+      if (metrics != null) {
+        metrics.recordError("storeToken");
+      }
       throw new EventStoreException("Failed to store token in EventStoreDB", e.getCause());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -116,11 +165,11 @@ public class EventStoreDBTokenStore implements TokenStore {
     String streamName = tokenStreamName(processorName, segment);
 
     try {
-      ReadResult result =
-          client
-              .readStream(
-                  streamName, ReadStreamOptions.get().backwards().fromEnd().maxCount(1))
-              .get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readStream(
+              streamName,
+              ReadStreamOptions.get().backwards().fromEnd().maxCount(1)).get(),
+          "fetchToken");
 
       List<ResolvedEvent> events = result.getEvents();
       if (events.isEmpty()) {
@@ -129,11 +178,18 @@ public class EventStoreDBTokenStore implements TokenStore {
 
       RecordedEvent recorded = events.get(0).getOriginalEvent();
       TokenEntry entry = objectMapper.readValue(recorded.getEventData(), TokenEntry.class);
+
+      if (metrics != null) {
+        metrics.recordTokenOperation("fetch");
+      }
       return entry.token();
 
     } catch (ExecutionException e) {
       if (isStreamNotFound(e)) {
-        return null; // No token stored yet
+        return null;
+      }
+      if (metrics != null) {
+        metrics.recordError("fetchToken");
       }
       throw new EventStoreException("Failed to fetch token from EventStoreDB", e.getCause());
     } catch (IOException e) {
@@ -161,16 +217,15 @@ public class EventStoreDBTokenStore implements TokenStore {
     for (int i = 0; i < segmentCount; i++) {
       String streamName = tokenStreamName(processorName, i);
 
-      // Only initialize if the stream doesn't exist
       try {
-        ReadResult result =
-            client
-                .readStream(
-                    streamName, ReadStreamOptions.get().forwards().fromStart().maxCount(1))
-                .get();
+        ReadResult result = retryExecutor.execute(
+            () -> client.readStream(
+                streamName,
+                ReadStreamOptions.get().forwards().fromStart().maxCount(1)).get(),
+            "checkTokenSegment");
         if (!result.getEvents().isEmpty()) {
-          log.debug(
-              "Token segment {}/{} already initialized, skipping", processorName, i);
+          log.debug("Token segment {}/{} already initialized, skipping",
+              processorName, i);
           continue;
         }
       } catch (ExecutionException e) {
@@ -178,13 +233,11 @@ public class EventStoreDBTokenStore implements TokenStore {
           throw new EventStoreException(
               "Failed to check token segment existence", e.getCause());
         }
-        // Stream not found = not initialized, proceed
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new EventStoreException("Interrupted during token initialization", e);
       }
 
-      // Initialize the segment
       TokenEntry entry =
           new TokenEntry(processorName, i, initialToken, nodeId, Instant.now());
 
@@ -193,22 +246,20 @@ public class EventStoreDBTokenStore implements TokenStore {
         EventData eventData =
             EventDataBuilder.json(UUID.randomUUID(), INIT_EVENT_TYPE, data).build();
 
-        client
-            .appendToStream(
+        retryExecutor.execute(
+            () -> client.appendToStream(
                 streamName,
                 AppendToStreamOptions.get().expectedRevision(ExpectedRevision.noStream()),
-                eventData)
-            .get();
+                eventData).get(),
+            "initializeTokenSegment");
 
-        log.info(
-            "Initialized token segment {}/{} with token: {}",
-            processorName,
-            i,
-            initialToken);
+        log.info("Initialized token segment {}/{} with token: {}",
+            processorName, i, initialToken);
 
       } catch (ExecutionException e) {
         if (e.getCause() instanceof WrongExpectedVersionException) {
-          log.debug("Token segment {}/{} already initialized by another node", processorName, i);
+          log.debug("Token segment {}/{} already initialized by another node",
+              processorName, i);
           continue;
         }
         throw new EventStoreException("Failed to initialize token segment", e.getCause());
@@ -223,8 +274,6 @@ public class EventStoreDBTokenStore implements TokenStore {
 
   @Override
   public int[] fetchSegments(String processorName) {
-    // Try reading segments 0 through a reasonable maximum
-    // In practice, most setups use 1 or a small number of segments
     int maxSegments = 64;
     int[] segments = new int[maxSegments];
     int count = 0;
@@ -232,21 +281,19 @@ public class EventStoreDBTokenStore implements TokenStore {
     for (int i = 0; i < maxSegments; i++) {
       String streamName = tokenStreamName(processorName, i);
       try {
-        ReadResult result =
-            client
-                .readStream(
-                    streamName, ReadStreamOptions.get().forwards().fromStart().maxCount(1))
-                .get();
+        ReadResult result = retryExecutor.execute(
+            () -> client.readStream(
+                streamName,
+                ReadStreamOptions.get().forwards().fromStart().maxCount(1)).get(),
+            "fetchSegments");
         if (!result.getEvents().isEmpty()) {
           segments[count++] = i;
         }
       } catch (ExecutionException e) {
         if (isStreamNotFound(e)) {
-          // If segment 0 doesn't exist, no segments exist
           if (i == 0) {
             break;
           }
-          // Sparse segments possible, continue checking
           continue;
         }
       } catch (InterruptedException e) {
@@ -263,10 +310,8 @@ public class EventStoreDBTokenStore implements TokenStore {
   // ────────────────────────────────────────────────────────────────────────
 
   @Override
-  public void extendClaim(String processorName, int segment) throws UnableToClaimTokenException {
-    // In single-node deployment, claims are implicit.
-    // For multi-node, this would need a distributed lock mechanism.
-    // Re-store the current token to extend the claim timestamp.
+  public void extendClaim(String processorName, int segment)
+      throws UnableToClaimTokenException {
     TrackingToken current = fetchToken(processorName, segment);
     if (current != null) {
       storeToken(current, processorName, segment);
@@ -275,7 +320,6 @@ public class EventStoreDBTokenStore implements TokenStore {
 
   @Override
   public void releaseClaim(String processorName, int segment) {
-    // No-op for EventStoreDB — claims are managed at the application level.
     log.trace("Released claim for processor '{}' segment {}", processorName, segment);
   }
 
@@ -284,9 +328,18 @@ public class EventStoreDBTokenStore implements TokenStore {
       throws UnableToClaimTokenException {
     String streamName = tokenStreamName(processorName, segment);
     try {
-      // Soft-delete the stream (EventStoreDB marks it as deleted)
-      client.deleteStream(streamName, DeleteStreamOptions.get()).get();
-      log.info("Deleted token stream for processor '{}' segment {}", processorName, segment);
+      retryExecutor.execute(
+          () -> {
+            client.deleteStream(streamName, DeleteStreamOptions.get()).get();
+            return null;
+          },
+          "deleteToken");
+      log.info("Deleted token stream for processor '{}' segment {}",
+          processorName, segment);
+
+      if (metrics != null) {
+        metrics.recordTokenOperation("delete");
+      }
     } catch (ExecutionException e) {
       if (!isStreamNotFound(e)) {
         throw new EventStoreException("Failed to delete token stream", e.getCause());
@@ -324,7 +377,7 @@ public class EventStoreDBTokenStore implements TokenStore {
   }
 
   /**
-   * Internal record stored in EventStoreDB for each token update. Serialized as JSON.
+   * Internal record stored in EventStoreDB for each token update.
    */
   record TokenEntry(
       @JsonProperty("processorName") String processorName,

@@ -1,5 +1,6 @@
 package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
+import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import org.axonframework.eventhandling.tokenstore.TokenStore;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
@@ -199,6 +200,71 @@ class AxonEventStoreDBAutoConfigurationTest {
                         "axon.eventstoredb.connection-string=esdb://admin:secretpass@localhost:2113?tls=false")
                 .run(context -> {
                     assertThat(context).hasSingleBean(EventStorageEngine.class);
+                });
+    }
+
+    // ── Retry configuration ─────────────────────────────────────────────
+
+    @Test
+    void shouldCreateRetryExecutorBean() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EventStoreDBRetryExecutor.class);
+                    EventStoreDBRetryExecutor executor =
+                            context.getBean(EventStoreDBRetryExecutor.class);
+                    assertThat(executor.getPolicy().isEnabled()).isTrue();
+                    assertThat(executor.getPolicy().getMaxRetries()).isEqualTo(3);
+                });
+    }
+
+    @Test
+    void shouldBindRetryProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.retry.max-retries=5",
+                        "axon.eventstoredb.retry.initial-backoff-ms=200",
+                        "axon.eventstoredb.retry.max-backoff-ms=10000",
+                        "axon.eventstoredb.retry.multiplier=3.0")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getRetry().getMaxRetries()).isEqualTo(5);
+                    assertThat(props.getRetry().getInitialBackoffMs()).isEqualTo(200);
+                    assertThat(props.getRetry().getMaxBackoffMs()).isEqualTo(10000);
+                    assertThat(props.getRetry().getMultiplier()).isEqualTo(3.0);
+                });
+    }
+
+    @Test
+    void shouldDisableRetryWhenConfigured() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.retry.enabled=false")
+                .run(context -> {
+                    EventStoreDBRetryExecutor executor =
+                            context.getBean(EventStoreDBRetryExecutor.class);
+                    assertThat(executor.getPolicy().isEnabled()).isFalse();
+                });
+    }
+
+    // ── Metrics configuration ───────────────────────────────────────────
+
+    @Test
+    void shouldBindMetricsProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.metrics.enabled=false")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getMetrics().isEnabled()).isFalse();
                 });
     }
 }

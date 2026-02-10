@@ -1,5 +1,9 @@
 package io.github.bsakweson.axon.eventstoredb;
 
+import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
+import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
+import io.github.bsakweson.axon.eventstoredb.upcasting.EventStoreDBDomainEventData;
+import io.github.bsakweson.axon.eventstoredb.upcasting.EventStoreDBTrackedDomainEventData;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBSerializer;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
@@ -22,6 +26,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import jakarta.annotation.Nonnull;
@@ -30,6 +35,7 @@ import jakarta.annotation.Nullable;
 import org.axonframework.common.AxonConfigurationException;
 import org.axonframework.eventhandling.DomainEventMessage;
 import org.axonframework.eventhandling.EventMessage;
+import org.axonframework.eventhandling.GenericDomainEventMessage;
 import org.axonframework.eventhandling.GenericTrackedDomainEventMessage;
 import org.axonframework.eventhandling.GlobalSequenceTrackingToken;
 import org.axonframework.eventhandling.TrackedEventMessage;
@@ -37,7 +43,13 @@ import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.eventsourcing.eventstore.DomainEventStream;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
 import org.axonframework.eventsourcing.eventstore.EventStoreException;
+import org.axonframework.messaging.MetaData;
+import org.axonframework.serialization.LazyDeserializingObject;
+import org.axonframework.serialization.SerializedObject;
 import org.axonframework.serialization.Serializer;
+import org.axonframework.serialization.upcasting.event.EventUpcaster;
+import org.axonframework.serialization.upcasting.event.InitialEventRepresentation;
+import org.axonframework.serialization.upcasting.event.IntermediateEventRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,13 +63,12 @@ import org.slf4j.LoggerFactory;
  * <p>Tracking processors read from the {@code $all} global stream, providing total ordering across
  * all aggregates. Snapshots are stored in dedicated streams ({@code __snapshot-{Type}-{Id}}).
  *
- * <p>Key mappings:
- *
+ * <p><b>Phase 2 features:</b>
  * <ul>
- *   <li>{@link #appendEvents} → {@code client.appendToStream()} with optimistic concurrency
- *   <li>{@link #readEvents(String, long)} → {@code client.readStream()} for aggregate event sourcing
- *   <li>{@link #readEvents(TrackingToken, boolean)} → {@code client.readAll()} for tracking
- *   <li>{@link #storeSnapshot} → append to snapshot stream, read most recent on load
+ *   <li><b>Event Upcasting</b> — optional {@link EventUpcaster} chain applied during read</li>
+ *   <li><b>Connection Resilience</b> — configurable retry with exponential backoff via
+ *       {@link EventStoreDBRetryExecutor}</li>
+ *   <li><b>Micrometer Metrics</b> — optional instrumentation via {@link EventStoreDBMetrics}</li>
  * </ul>
  *
  * @see EventStoreDBTrackingToken
@@ -69,22 +80,48 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   private final EventStoreDBClient client;
   private final EventStoreDBSerializer serializer;
+  private final Serializer eventSerializer;
   private final EventStoreDBStreamNaming naming;
   private final int batchSize;
+  @Nullable private final EventUpcaster upcasterChain;
+  private final EventStoreDBRetryExecutor retryExecutor;
+  @Nullable private final EventStoreDBMetrics metrics;
 
   /**
-   * Creates a new EventStoreDB-backed event storage engine.
+   * Creates a new EventStoreDB-backed event storage engine (backward-compatible constructor).
    *
-   * @param client the EventStoreDB gRPC client
+   * @param client          the EventStoreDB gRPC client
    * @param eventSerializer the Axon serializer for event payloads
-   * @param naming stream naming strategy
-   * @param batchSize number of events to read per batch when tracking
+   * @param naming          stream naming strategy
+   * @param batchSize       number of events to read per batch when tracking
    */
   public EventStoreDBEventStorageEngine(
       EventStoreDBClient client,
       Serializer eventSerializer,
       EventStoreDBStreamNaming naming,
       int batchSize) {
+    this(client, eventSerializer, naming, batchSize, null, null, null);
+  }
+
+  /**
+   * Creates a new EventStoreDB-backed event storage engine with Phase 2 features.
+   *
+   * @param client          the EventStoreDB gRPC client
+   * @param eventSerializer the Axon serializer for event payloads
+   * @param naming          stream naming strategy
+   * @param batchSize       number of events to read per batch when tracking
+   * @param upcasterChain   optional event upcaster chain (may be null)
+   * @param retryExecutor   optional retry executor (may be null — defaults to no-retry)
+   * @param metrics         optional Micrometer metrics (may be null)
+   */
+  public EventStoreDBEventStorageEngine(
+      EventStoreDBClient client,
+      Serializer eventSerializer,
+      EventStoreDBStreamNaming naming,
+      int batchSize,
+      @Nullable EventUpcaster upcasterChain,
+      @Nullable EventStoreDBRetryExecutor retryExecutor,
+      @Nullable EventStoreDBMetrics metrics) {
     if (client == null) {
       throw new AxonConfigurationException("EventStoreDBClient must not be null");
     }
@@ -92,9 +129,14 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
       throw new AxonConfigurationException("Event Serializer must not be null");
     }
     this.client = client;
+    this.eventSerializer = eventSerializer;
     this.serializer = new EventStoreDBSerializer(eventSerializer);
     this.naming = naming != null ? naming : new EventStoreDBStreamNaming();
     this.batchSize = batchSize > 0 ? batchSize : 256;
+    this.upcasterChain = upcasterChain;
+    this.retryExecutor = retryExecutor != null
+        ? retryExecutor : EventStoreDBRetryExecutor.noRetry();
+    this.metrics = metrics;
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -107,8 +149,6 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
       return;
     }
 
-    // Group events by aggregate stream
-    // In typical Axon usage, all events in a single append belong to the same aggregate
     for (EventMessage<?> event : events) {
       if (event instanceof DomainEventMessage<?> domainEvent) {
         String streamName =
@@ -118,7 +158,6 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
         EventData eventData = serializer.serialize(domainEvent);
 
         try {
-          // Use optimistic concurrency: expect specific revision for non-first events
           AppendToStreamOptions options = AppendToStreamOptions.get();
           if (domainEvent.getSequenceNumber() == 0) {
             options.expectedRevision(ExpectedRevision.noStream());
@@ -127,14 +166,23 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
                 ExpectedRevision.expectedRevision(domainEvent.getSequenceNumber() - 1));
           }
 
-          WriteResult result = client.appendToStream(streamName, options, eventData).get();
+          WriteResult result = retryExecutor.execute(
+              () -> client.appendToStream(streamName, options, eventData).get(),
+              "appendEvents");
           log.debug(
               "Appended event {} to stream '{}' at revision {}",
               domainEvent.getIdentifier(),
               streamName,
               result.getNextExpectedRevision().toRawLong());
 
+          if (metrics != null) {
+            metrics.recordEventsAppended(1);
+          }
+
         } catch (ExecutionException e) {
+          if (metrics != null) {
+            metrics.recordError("append");
+          }
           Throwable cause = e.getCause();
           if (cause instanceof WrongExpectedVersionException) {
             throw new EventStoreException(
@@ -171,9 +219,11 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
     EventData eventData = serializer.serialize(snapshot);
 
     try {
-      // Snapshots always use ANY expected revision — we just append
-      AppendToStreamOptions options = AppendToStreamOptions.get().expectedRevision(ExpectedRevision.any());
-      client.appendToStream(streamName, options, eventData).get();
+      AppendToStreamOptions options =
+          AppendToStreamOptions.get().expectedRevision(ExpectedRevision.any());
+      retryExecutor.execute(
+          () -> client.appendToStream(streamName, options, eventData).get(),
+          "storeSnapshot");
 
       log.debug(
           "Stored snapshot for aggregate {}/{} at sequence {}",
@@ -181,7 +231,14 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
           snapshot.getAggregateIdentifier(),
           snapshot.getSequenceNumber());
 
+      if (metrics != null) {
+        metrics.recordSnapshotStored();
+      }
+
     } catch (ExecutionException e) {
+      if (metrics != null) {
+        metrics.recordError("storeSnapshot");
+      }
       throw new EventStoreException("Failed to store snapshot in EventStoreDB", e.getCause());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -191,41 +248,19 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   @Override
   public Optional<DomainEventMessage<?>> readSnapshot(@Nonnull String aggregateIdentifier) {
-    // We need to find the snapshot stream — but we don't know the aggregate type from just the ID.
-    // Convention: scan all snapshot streams for this aggregate ID.
-    // Optimization: services typically know their aggregate type, so we try common patterns.
-    // For now, we use a brute-force approach: try reading the well-known snapshot stream.
-    // The aggregate type will be embedded in the stream name.
-
-    // In practice, Axon calls readSnapshot() with the aggregateIdentifier, and the aggregate type
-    // is determined by the aggregate class. We need a way to resolve this.
-    // Workaround: try to find any snapshot stream for this aggregate identifier.
-    // This is acceptable because aggregate IDs are globally unique (UUIDs).
     return findSnapshotForAggregate(aggregateIdentifier);
   }
 
   private Optional<DomainEventMessage<?>> findSnapshotForAggregate(String aggregateIdentifier) {
-    // Try reading $all and filtering, or enumerate known aggregate types.
-    // For efficiency, we use EventStoreDB's stream naming convention.
-    // Since we don't know the type, we'll try the category projection approach.
-
-    // Strategy: Read from the $all stream filtered by metadata, or try known types.
-    // For simplicity in MVP, we store the aggregate type in the snapshot metadata
-    // and can look it up by reading a well-known index stream.
-
-    // PRAGMATIC APPROACH: Read the aggregate's event stream to determine its type,
-    // then read the snapshot stream.
     try {
-      // Read one event from the aggregate to determine its type
-      // This works because aggregate IDs are unique UUIDs
       ReadResult allResult =
-          client
-              .readAll(
+          retryExecutor.execute(
+              () -> client.readAll(
                   ReadAllOptions.get()
                       .forwards()
                       .fromStart()
-                      .maxCount(batchSize))
-              .get();
+                      .maxCount(batchSize)).get(),
+              "findSnapshotForAggregate");
 
       String aggregateType = null;
       for (ResolvedEvent resolved : allResult.getEvents()) {
@@ -256,13 +291,12 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   private Optional<DomainEventMessage<?>> readLatestSnapshot(String snapshotStream) {
     try {
-      // Read the last event in the snapshot stream (most recent snapshot)
       ReadResult result =
-          client
-              .readStream(
+          retryExecutor.execute(
+              () -> client.readStream(
                   snapshotStream,
-                  ReadStreamOptions.get().backwards().fromEnd().maxCount(1))
-              .get();
+                  ReadStreamOptions.get().backwards().fromEnd().maxCount(1)).get(),
+              "readLatestSnapshot");
 
       List<ResolvedEvent> events = result.getEvents();
       if (events.isEmpty()) {
@@ -270,6 +304,9 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
       }
 
       DomainEventMessage<?> snapshot = serializer.deserialize(events.get(0));
+      if (metrics != null) {
+        metrics.recordSnapshotRead();
+      }
       return Optional.of(snapshot);
 
     } catch (ExecutionException e) {
@@ -290,17 +327,6 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   @Override
   public DomainEventStream readEvents(@Nonnull String aggregateIdentifier, long firstSequenceNumber) {
-    // We need the aggregate type to build the stream name.
-    // Axon's AbstractRepository provides the type, and the readEvents() call chain
-    // ultimately resolves the stream name. However, this interface only gives us the ID.
-    //
-    // Strategy: We scan for the stream by aggregate ID.
-    // EventStoreDB category projections make this efficient: read $ce-{type} if type is known,
-    // or search streams by suffix.
-    //
-    // PRACTICAL: Since aggregate IDs are UUIDs and stream names are {Type}-{UUID},
-    // we can find the stream by reading the $streams system stream or by trying known types.
-
     String streamName = findStreamForAggregate(aggregateIdentifier);
     if (streamName == null) {
       return DomainEventStream.of(Collections.<DomainEventMessage<?>>emptyList());
@@ -311,16 +337,28 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
           ReadStreamOptions.get()
               .forwards()
               .fromRevision(firstSequenceNumber)
-              .maxCount(Long.MAX_VALUE); // Read all events
+              .maxCount(Long.MAX_VALUE);
 
-      ReadResult result = client.readStream(streamName, options).get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readStream(streamName, options).get(),
+          "readEvents");
       List<ResolvedEvent> resolvedEvents = result.getEvents();
 
-      List<DomainEventMessage<?>> domainEvents = new ArrayList<>(resolvedEvents.size());
-      for (ResolvedEvent resolved : resolvedEvents) {
-        domainEvents.add(serializer.deserialize(resolved));
+      List<? extends DomainEventMessage<?>> domainEvents;
+      if (upcasterChain != null) {
+        domainEvents = upcastAndDeserializeDomain(resolvedEvents);
+      } else {
+        List<DomainEventMessage<?>> directEvents =
+            new ArrayList<>(resolvedEvents.size());
+        for (ResolvedEvent resolved : resolvedEvents) {
+          directEvents.add(serializer.deserialize(resolved));
+        }
+        domainEvents = directEvents;
       }
 
+      if (metrics != null) {
+        metrics.recordEventsRead(domainEvents.size());
+      }
       return DomainEventStream.of(domainEvents);
 
     } catch (ExecutionException e) {
@@ -341,18 +379,15 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
   }
 
   /**
-   * Finds the EventStoreDB stream name for a given aggregate identifier. Searches all user streams
-   * for one ending with the aggregate ID.
+   * Finds the EventStoreDB stream name for a given aggregate identifier.
    */
   private String findStreamForAggregate(String aggregateIdentifier) {
     try {
-      // Read a batch from $all and look for our aggregate
-      // This is O(n) in worst case but works for MVP.
-      // Production optimization: maintain a local cache of aggregate → stream mappings
       ReadResult allResult =
-          client
-              .readAll(ReadAllOptions.get().forwards().fromStart().maxCount(4096))
-              .get();
+          retryExecutor.execute(
+              () -> client.readAll(
+                  ReadAllOptions.get().forwards().fromStart().maxCount(4096)).get(),
+              "findStreamForAggregate");
 
       for (ResolvedEvent resolved : allResult.getEvents()) {
         RecordedEvent recorded = resolved.getOriginalEvent();
@@ -377,57 +412,47 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
   @Override
   public Stream<? extends TrackedEventMessage<?>> readEvents(
       @Nullable TrackingToken trackingToken, boolean mayBlock) {
-    // Convert Axon TrackingToken to EventStoreDB Position
     ReadAllOptions options = ReadAllOptions.get().forwards().maxCount(batchSize);
 
     if (trackingToken == null) {
       options.fromStart();
     } else if (trackingToken instanceof EventStoreDBTrackingToken esdbToken) {
-      // Read from the position AFTER the given token
       options.fromPosition(
           new Position(esdbToken.getCommitPosition(), esdbToken.getPreparePosition()));
     } else if (trackingToken instanceof GlobalSequenceTrackingToken globalToken) {
-      // Compatibility: if a GlobalSequenceTrackingToken is passed (e.g., from JPA store migration),
-      // we start from the beginning and skip. This is a fallback.
       log.warn(
           "Received GlobalSequenceTrackingToken instead of EventStoreDBTrackingToken. "
               + "Starting from beginning of $all stream. Position: {}",
           globalToken.getGlobalIndex());
       options.fromStart();
     } else {
-      log.warn("Unknown tracking token type: {}. Starting from beginning.", trackingToken.getClass());
+      log.warn("Unknown tracking token type: {}. Starting from beginning.",
+          trackingToken.getClass());
       options.fromStart();
     }
 
     try {
-      ReadResult result = client.readAll(options).get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readAll(options).get(),
+          "readTrackedEvents");
       List<ResolvedEvent> resolvedEvents = result.getEvents();
 
-      // Filter out system streams and our internal streams (snapshots, tokens)
-      List<TrackedEventMessage<?>> trackedMessages = new ArrayList<>();
-      for (ResolvedEvent resolved : resolvedEvents) {
-        RecordedEvent recorded = resolved.getOriginalEvent();
-        String streamId = recorded.getStreamId();
-
-        // Skip system and internal streams
-        if (streamId.startsWith("$") || naming.isSystemStream(streamId)) {
-          continue;
-        }
-
-        DomainEventMessage<?> domainEvent = serializer.deserialize(resolved);
-        Position position = resolved.getOriginalEvent().getPosition();
-        EventStoreDBTrackingToken token =
-            EventStoreDBTrackingToken.of(
-                position.getCommitUnsigned(), position.getPrepareUnsigned());
-
-        TrackedEventMessage<?> tracked =
-            new GenericTrackedDomainEventMessage<>(token, domainEvent);
-        trackedMessages.add(tracked);
+      List<TrackedEventMessage<?>> trackedMessages;
+      if (upcasterChain != null) {
+        trackedMessages = upcastAndDeserializeTracked(resolvedEvents);
+      } else {
+        trackedMessages = deserializeTrackedDirect(resolvedEvents);
       }
 
+      if (metrics != null) {
+        metrics.recordEventsRead(trackedMessages.size());
+      }
       return trackedMessages.stream();
 
     } catch (ExecutionException e) {
+      if (metrics != null) {
+        metrics.recordError("readTrackedEvents");
+      }
       throw new EventStoreException(
           "Failed to read tracked events from EventStoreDB $all stream", e.getCause());
     } catch (InterruptedException e) {
@@ -437,27 +462,128 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
   }
 
   // ────────────────────────────────────────────────────────────────────────
+  // UPCASTING HELPERS
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Upcasts and deserializes domain events using the configured upcaster chain.
+   */
+  private List<DomainEventMessage<?>> upcastAndDeserializeDomain(
+      List<ResolvedEvent> resolvedEvents) {
+    Stream<IntermediateEventRepresentation> representations = resolvedEvents.stream()
+        .map(EventStoreDBDomainEventData::new)
+        .map(data -> new InitialEventRepresentation(data, eventSerializer));
+
+    Stream<IntermediateEventRepresentation> upcasted =
+        upcasterChain.upcast(representations);
+
+    return upcasted.map(this::toGenericDomainEventMessage)
+        .collect(Collectors.toList());
+  }
+
+  /**
+   * Upcasts and deserializes tracked events using the configured upcaster chain.
+   * Filters out system and internal streams before upcasting.
+   */
+  private List<TrackedEventMessage<?>> upcastAndDeserializeTracked(
+      List<ResolvedEvent> resolvedEvents) {
+    Stream<IntermediateEventRepresentation> representations = resolvedEvents.stream()
+        .filter(resolved -> {
+          String streamId = resolved.getOriginalEvent().getStreamId();
+          return !streamId.startsWith("$") && !naming.isSystemStream(streamId);
+        })
+        .map(resolved -> {
+          EventStoreDBTrackedDomainEventData trackedData =
+              new EventStoreDBTrackedDomainEventData(resolved);
+          return new InitialEventRepresentation(trackedData, eventSerializer);
+        });
+
+    Stream<IntermediateEventRepresentation> upcasted =
+        upcasterChain.upcast(representations);
+
+    return upcasted.map(rep -> {
+      DomainEventMessage<?> domainEvent = toGenericDomainEventMessage(rep);
+      TrackingToken token = rep.getTrackingToken().orElse(null);
+      return (TrackedEventMessage<?>) new GenericTrackedDomainEventMessage<>(
+          token, domainEvent);
+    }).collect(Collectors.toList());
+  }
+
+  /**
+   * Direct deserialization of tracked events without upcasting (original path).
+   */
+  private List<TrackedEventMessage<?>> deserializeTrackedDirect(
+      List<ResolvedEvent> resolvedEvents) {
+    List<TrackedEventMessage<?>> trackedMessages = new ArrayList<>();
+    for (ResolvedEvent resolved : resolvedEvents) {
+      RecordedEvent recorded = resolved.getOriginalEvent();
+      String streamId = recorded.getStreamId();
+
+      if (streamId.startsWith("$") || naming.isSystemStream(streamId)) {
+        continue;
+      }
+
+      DomainEventMessage<?> domainEvent = serializer.deserialize(resolved);
+      Position position = resolved.getOriginalEvent().getPosition();
+      EventStoreDBTrackingToken token =
+          EventStoreDBTrackingToken.of(
+              position.getCommitUnsigned(), position.getPrepareUnsigned());
+
+      TrackedEventMessage<?> tracked =
+          new GenericTrackedDomainEventMessage<>(token, domainEvent);
+      trackedMessages.add(tracked);
+    }
+    return trackedMessages;
+  }
+
+  /**
+   * Converts an upcasted intermediate representation into a domain event message.
+   */
+  @SuppressWarnings("unchecked")
+  private DomainEventMessage<?> toGenericDomainEventMessage(
+      IntermediateEventRepresentation rep) {
+    SerializedObject<byte[]> serializedPayload = rep.getData(byte[].class);
+    Object payload = eventSerializer.deserialize(serializedPayload);
+
+    MetaData metaData;
+    try {
+      LazyDeserializingObject<MetaData> lazyMeta = rep.getMetaData();
+      metaData = lazyMeta != null ? lazyMeta.getObject() : MetaData.emptyInstance();
+    } catch (Exception e) {
+      log.debug("Failed to deserialize metadata, using empty", e);
+      metaData = MetaData.emptyInstance();
+    }
+
+    return new GenericDomainEventMessage<>(
+        rep.getAggregateType().orElse(""),
+        rep.getAggregateIdentifier().orElse(""),
+        rep.getSequenceNumber().orElse(0L),
+        payload,
+        metaData,
+        rep.getMessageIdentifier(),
+        rep.getTimestamp());
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
   // TOKEN CREATION
   // ────────────────────────────────────────────────────────────────────────
 
   @Override
   public TrackingToken createTailToken() {
-    // Tail token = start of stream. Return null per Axon convention (means "from the beginning")
     return null;
   }
 
   @Override
   public TrackingToken createHeadToken() {
-    // Head token = end of current stream. Events after this position will be tracked.
     try {
-      ReadResult result =
-          client
-              .readAll(ReadAllOptions.get().backwards().fromEnd().maxCount(1))
-              .get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readAll(
+              ReadAllOptions.get().backwards().fromEnd().maxCount(1)).get(),
+          "createHeadToken");
 
       List<ResolvedEvent> events = result.getEvents();
       if (events.isEmpty()) {
-        return null; // Empty store
+        return null;
       }
 
       Position position = events.get(0).getOriginalEvent().getPosition();
@@ -474,30 +600,25 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   @Override
   public TrackingToken createTokenAt(@Nonnull Instant dateTime) {
-    // Find the position of the first event at or after the given timestamp.
-    // EventStoreDB doesn't have a native "position at timestamp" API, so we scan $all.
     try {
-      ReadResult result =
-          client
-              .readAll(ReadAllOptions.get().forwards().fromStart().maxCount(4096))
-              .get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readAll(
+              ReadAllOptions.get().forwards().fromStart().maxCount(4096)).get(),
+          "createTokenAt");
 
       for (ResolvedEvent resolved : result.getEvents()) {
         RecordedEvent recorded = resolved.getOriginalEvent();
         Instant eventTime = recorded.getCreated();
         if (!eventTime.isBefore(dateTime)) {
           Position position = recorded.getPosition();
-          // Return the position BEFORE this event so that tracking will include it
           long commitPos = position.getCommitUnsigned();
           long preparePos = position.getPrepareUnsigned();
-          // Use the position just before this event
           return commitPos > 0
               ? EventStoreDBTrackingToken.of(commitPos - 1, preparePos - 1)
               : EventStoreDBTrackingToken.start();
         }
       }
 
-      // No events found at or after this timestamp — return head token
       return createHeadToken();
 
     } catch (ExecutionException e) {
@@ -520,18 +641,17 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
     }
 
     try {
-      ReadResult result =
-          client
-              .readStream(
-                  streamName, ReadStreamOptions.get().backwards().fromEnd().maxCount(1))
-              .get();
+      ReadResult result = retryExecutor.execute(
+          () -> client.readStream(
+              streamName,
+              ReadStreamOptions.get().backwards().fromEnd().maxCount(1)).get(),
+          "lastSequenceNumberFor");
 
       List<ResolvedEvent> events = result.getEvents();
       if (events.isEmpty()) {
         return Optional.empty();
       }
 
-      // The stream revision IS the sequence number in our convention
       long revision = events.get(0).getOriginalEvent().getRevision();
       return Optional.of(revision);
 
