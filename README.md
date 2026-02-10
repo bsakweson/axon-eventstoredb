@@ -39,7 +39,7 @@ A Spring Boot starter that integrates [EventStoreDB](https://www.eventstore.com/
 **Gradle:**
 
 ```groovy
-implementation 'io.github.bsakweson:axon-eventstoredb:0.2.2'
+implementation 'io.github.bsakweson:axon-eventstoredb:0.3.0'
 ```
 
 **Maven:**
@@ -48,7 +48,7 @@ implementation 'io.github.bsakweson:axon-eventstoredb:0.2.2'
 <dependency>
     <groupId>io.github.bsakweson</groupId>
     <artifactId>axon-eventstoredb</artifactId>
-    <version>0.2.2</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 

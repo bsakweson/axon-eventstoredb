@@ -10,7 +10,7 @@ plugins {
 }
 
 group = 'io.github.bsakweson'
-version = '0.2.2-SNAPSHOT'
+version = '0.3.0'
 description = 'Spring Boot starter for using EventStoreDB as an Axon Framework event store'
 
 dependencyManagement {

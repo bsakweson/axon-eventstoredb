@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-10
+
 ### Added
 
 - `EventStoreDBPersistentSubscriptionMessageSource` — Push-based `StreamableMessageSource` backed by EventStoreDB persistent subscriptions with competing consumer support
