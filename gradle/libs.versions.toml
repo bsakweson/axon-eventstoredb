@@ -49,3 +49,4 @@ testcontainers-junit-jupiter = { module = "org.testcontainers:junit-jupiter", ve
 spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
 spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "spring-dependency-management" }
 spotbugs = { id = "com.github.spotbugs", version = "6.1.7" }
+nexus-publish = { id = "io.github.gradle-nexus.publish-plugin", version = "2.0.0" }

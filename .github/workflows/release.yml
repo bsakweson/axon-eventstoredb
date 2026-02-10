@@ -81,14 +81,14 @@ jobs:
       - name: Build release
         run: ./gradlew build -x integrationTest -x test
 
-      # ── Publish to Maven Central (OSSRH) ─────────────────────────────
+      # ── Publish to Maven Central (Central Portal) ──────────────────────
       - name: Publish to Maven Central
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publish
+        run: ./gradlew publishToSonatypeCentralPortal closeSonatypeCentralPortalStagingRepository
 
       # ── Tag & GitHub Release ─────────────────────────────────────────
       - name: Create tag

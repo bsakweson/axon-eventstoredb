@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -40,6 +41,7 @@ import java.util.UUID;
  * </ul>
  */
 @AutoConfiguration
+@AutoConfigureBefore(name = "org.axonframework.springboot.autoconfig.JpaEventStoreAutoConfiguration")
 @ConditionalOnClass(EventStoreDBClient.class)
 @ConditionalOnProperty(prefix = "axon.eventstoredb", name = "enabled", havingValue = "true")
 @EnableConfigurationProperties(EventStoreDBProperties.class)
