@@ -5,8 +5,9 @@ import com.eventstore.dbclient.ResolvedEvent;
 
 import io.github.bsakweson.axon.eventstoredb.EventStoreDBTrackingToken;
 
-import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.eventhandling.DomainEventData;
+import org.axonframework.eventhandling.TrackedEventData;
+import org.axonframework.eventhandling.TrackingToken;
 import org.axonframework.serialization.SerializedObject;
 
 import java.time.Instant;
@@ -19,13 +20,15 @@ import java.time.Instant;
  * (commit + prepare) so that event processors can resume from the correct
  * position.
  *
- * <p>This class implements both {@link DomainEventData} and provides the
- * tracking token, allowing Axon's
+ * <p>This class implements both {@link DomainEventData} and {@link TrackedEventData},
+ * allowing Axon's
  * {@link org.axonframework.serialization.upcasting.event.InitialEventRepresentation}
  * to extract aggregate info and tracking position simultaneously.
+ * Implementing {@code TrackedEventData} is required for the upcasting pipeline
+ * to propagate the tracking token through {@code InitialEventRepresentation}.
  */
 public class EventStoreDBTrackedDomainEventData
-    implements DomainEventData<byte[]> {
+    implements DomainEventData<byte[]>, TrackedEventData<byte[]> {
 
   private final EventStoreDBDomainEventData delegate;
   private final TrackingToken trackingToken;
