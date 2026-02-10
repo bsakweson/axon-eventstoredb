@@ -1,16 +1,22 @@
 package com.bakalr.axon.eventstoredb;
 
 import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
-import com.eventstore.dbclient.*;
+import com.eventstore.dbclient.AppendToStreamOptions;
+import com.eventstore.dbclient.DeleteResult;
+import com.eventstore.dbclient.DeleteStreamOptions;
+import com.eventstore.dbclient.EventData;
+import com.eventstore.dbclient.EventStoreDBClient;
+import com.eventstore.dbclient.ReadResult;
+import com.eventstore.dbclient.ReadStreamOptions;
+import com.eventstore.dbclient.RecordedEvent;
+import com.eventstore.dbclient.ResolvedEvent;
 import com.eventstore.dbclient.StreamNotFoundExceptionFactory;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.eventstore.dbclient.WriteResult;
+import com.eventstore.dbclient.WrongExpectedVersionException;
 
-import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import org.axonframework.eventhandling.TrackingToken;
@@ -90,7 +96,11 @@ class EventStoreDBTokenStoreTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -188,7 +198,11 @@ class EventStoreDBTokenStoreTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -239,7 +253,11 @@ class EventStoreDBTokenStoreTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -335,7 +353,11 @@ class EventStoreDBTokenStoreTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -429,7 +451,11 @@ class EventStoreDBTokenStoreTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 

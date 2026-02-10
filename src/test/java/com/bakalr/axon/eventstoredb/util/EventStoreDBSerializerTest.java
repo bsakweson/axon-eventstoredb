@@ -418,9 +418,10 @@ class EventStoreDBSerializerTest {
         public String name;
         public int value;
 
-        public TestEvent() {}
+        TestEvent() {
+        }
 
-        public TestEvent(String name, int value) {
+        TestEvent(String name, int value) {
             this.name = name;
             this.value = value;
         }

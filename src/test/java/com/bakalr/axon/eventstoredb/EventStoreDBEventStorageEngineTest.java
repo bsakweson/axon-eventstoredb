@@ -1,8 +1,19 @@
 package com.bakalr.axon.eventstoredb;
 
 import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
-import com.eventstore.dbclient.*;
+import com.eventstore.dbclient.AppendToStreamOptions;
+import com.eventstore.dbclient.EventData;
+import com.eventstore.dbclient.EventStoreDBClient;
+import com.eventstore.dbclient.ExpectedRevision;
+import com.eventstore.dbclient.Position;
+import com.eventstore.dbclient.ReadAllOptions;
+import com.eventstore.dbclient.ReadResult;
+import com.eventstore.dbclient.ReadStreamOptions;
+import com.eventstore.dbclient.RecordedEvent;
+import com.eventstore.dbclient.ResolvedEvent;
 import com.eventstore.dbclient.StreamNotFoundExceptionFactory;
+import com.eventstore.dbclient.WriteResult;
+import com.eventstore.dbclient.WrongExpectedVersionException;
 
 import java.time.Instant;
 import java.util.Collections;
@@ -166,7 +177,11 @@ class EventStoreDBEventStorageEngineTest {
         // Simulate InterruptedException by cancelling the future's get()
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -234,7 +249,11 @@ class EventStoreDBEventStorageEngineTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -297,7 +316,11 @@ class EventStoreDBEventStorageEngineTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -435,7 +458,11 @@ class EventStoreDBEventStorageEngineTest {
 
         Thread testThread = Thread.currentThread();
         new Thread(() -> {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // intentionally empty
+            }
             testThread.interrupt();
         }).start();
 
@@ -808,12 +835,13 @@ class EventStoreDBEventStorageEngineTest {
 
     // ── Test payload ────────────────────────────────────────────────────
 
-    public static class TestPayload {
+    static class TestPayload {
         public String data;
 
-        public TestPayload() {}
+        TestPayload() {
+        }
 
-        public TestPayload(String data) {
+        TestPayload(String data) {
             this.data = data;
         }
     }

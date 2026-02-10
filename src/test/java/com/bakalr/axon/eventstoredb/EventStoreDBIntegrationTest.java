@@ -1,6 +1,5 @@
 package com.bakalr.axon.eventstoredb;
 
-import com.bakalr.axon.eventstoredb.util.EventStoreDBSerializer;
 import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;

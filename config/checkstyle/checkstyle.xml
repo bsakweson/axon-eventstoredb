@@ -12,10 +12,10 @@
     <property name="severity" value="warning"/>
     <property name="fileExtensions" value="java"/>
 
-    <!-- Suppress checks on test sources for line length and javadoc -->
+    <!-- Suppress checks on test sources for line length, file length, and javadoc -->
     <module name="SuppressionSingleFilter">
         <property name="files" value="src[\\/]test[\\/]"/>
-        <property name="checks" value="JavadocType|JavadocMethod|JavadocVariable|LineLength"/>
+        <property name="checks" value="JavadocType|JavadocMethod|JavadocVariable|LineLength|FileLength"/>
     </module>
 
     <!-- ── File-level checks ─────────────────────────────────────────── -->
