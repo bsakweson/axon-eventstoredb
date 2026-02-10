@@ -88,7 +88,7 @@ jobs:
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publishToSonatypeCentralPortal closeSonatypeCentralPortalStagingRepository
+        run: ./gradlew publishAggregationToCentralPortal
 
       # ── Tag & GitHub Release ─────────────────────────────────────────
       - name: Create tag

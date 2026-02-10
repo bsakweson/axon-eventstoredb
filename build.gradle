@@ -7,7 +7,6 @@ plugins {
     alias(libs.plugins.spotbugs)
     alias(libs.plugins.spring.boot) apply false
     alias(libs.plugins.spring.dependency.management)
-    alias(libs.plugins.nexus.publish)
 }
 
 group = 'com.bakalr.axon'
@@ -210,19 +209,7 @@ publishing {
     }
 
     repositories {
-        // Removed: legacy OSSRH no longer accepts uploads (HTTP 402)
-        // Publishing is handled via Central Portal (nexusPublishing block below)
-    }
-}
-
-// ── Central Portal publishing (replaces legacy OSSRH) ────────────────────────
-
-nexusPublishing {
-    repositories {
-        sonatypeCentralPortal {
-            username = findProperty('ossrhUsername') ?: System.getenv('OSSRH_USERNAME')
-            password = findProperty('ossrhPassword') ?: System.getenv('OSSRH_PASSWORD')
-        }
+        // Publishing handled by nmcp settings plugin (Central Portal upload)
     }
 }
 
