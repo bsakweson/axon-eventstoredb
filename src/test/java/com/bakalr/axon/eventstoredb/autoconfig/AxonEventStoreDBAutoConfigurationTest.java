@@ -1,0 +1,204 @@
+package com.bakalr.axon.eventstoredb.autoconfig;
+
+import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import org.axonframework.eventhandling.tokenstore.TokenStore;
+import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
+import org.axonframework.serialization.Serializer;
+import org.axonframework.serialization.json.JacksonSerializer;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class AxonEventStoreDBAutoConfigurationTest {
+
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(AxonEventStoreDBAutoConfiguration.class))
+            .withUserConfiguration(MockSerializerConfiguration.class);
+
+    @Configuration
+    static class MockSerializerConfiguration {
+        @Bean(name = "eventSerializer")
+        public Serializer eventSerializer() {
+            return JacksonSerializer.defaultSerializer();
+        }
+    }
+
+    // ── Conditional activation ──────────────────────────────────────────
+
+    @Test
+    void shouldNotLoadWhenPropertyDisabled() {
+        contextRunner
+                .withPropertyValues("axon.eventstoredb.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EventStorageEngine.class);
+                    assertThat(context).doesNotHaveBean(TokenStore.class);
+                    assertThat(context).doesNotHaveBean(EventStoreDBStreamNaming.class);
+                });
+    }
+
+    @Test
+    void shouldNotLoadWhenPropertyMissing() {
+        contextRunner
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EventStorageEngine.class);
+                    assertThat(context).doesNotHaveBean(TokenStore.class);
+                });
+    }
+
+    // ── Property binding ────────────────────────────────────────────────
+
+    @Test
+    void shouldLoadEventStoreDBProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.host=myhost",
+                        "axon.eventstoredb.port=2114",
+                        "axon.eventstoredb.batch-size=512",
+                        "axon.eventstoredb.stream-prefix=myapp",
+                        "axon.eventstoredb.snapshot-stream-prefix=__snap",
+                        "axon.eventstoredb.token-stream-prefix=__tok")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EventStoreDBProperties.class);
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getHost()).isEqualTo("myhost");
+                    assertThat(props.getPort()).isEqualTo(2114);
+                    assertThat(props.getBatchSize()).isEqualTo(512);
+                    assertThat(props.getStreamPrefix()).isEqualTo("myapp");
+                    assertThat(props.getSnapshotStreamPrefix()).isEqualTo("__snap");
+                    assertThat(props.getTokenStreamPrefix()).isEqualTo("__tok");
+                });
+    }
+
+    @Test
+    void shouldBindConnectionStringProperty() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://node1:2113?tls=false")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getConnectionString()).isEqualTo("esdb://node1:2113?tls=false");
+                    assertThat(props.getEffectiveConnectionString()).isEqualTo("esdb://node1:2113?tls=false");
+                });
+    }
+
+    @Test
+    void shouldBindTlsProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.tls=true",
+                        "axon.eventstoredb.tls-verify-cert=false")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.isTls()).isTrue();
+                    assertThat(props.isTlsVerifyCert()).isFalse();
+                });
+    }
+
+    @Test
+    void shouldBindNodeIdProperty() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.node-id=my-node-1")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getNodeId()).isEqualTo("my-node-1");
+                });
+    }
+
+    @Test
+    void shouldBindUsernameAndPasswordProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.username=myuser",
+                        "axon.eventstoredb.password=mypass")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getUsername()).isEqualTo("myuser");
+                    assertThat(props.getPassword()).isEqualTo("mypass");
+                });
+    }
+
+    // ── Bean creation with valid connection string ──────────────────────
+
+    @Test
+    void shouldCreateBeansWithValidConnectionString() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EventStoreDBStreamNaming.class);
+                    assertThat(context).hasSingleBean(EventStorageEngine.class);
+                    assertThat(context).hasSingleBean(TokenStore.class);
+                });
+    }
+
+    @Test
+    void shouldCreateStreamNamingWithCustomPrefixes() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.stream-prefix=myapp",
+                        "axon.eventstoredb.snapshot-stream-prefix=__snap",
+                        "axon.eventstoredb.token-stream-prefix=__tok")
+                .run(context -> {
+                    EventStoreDBStreamNaming naming = context.getBean(EventStoreDBStreamNaming.class);
+                    assertThat(naming.aggregateStream("Order", "1")).isEqualTo("myapp-Order-1");
+                    assertThat(naming.snapshotStream("Order", "1")).isEqualTo("__snap-Order-1");
+                    assertThat(naming.tokenStream("proc")).isEqualTo("__tok-proc");
+                });
+    }
+
+    @Test
+    void shouldUseConfiguredNodeIdForTokenStore() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.node-id=stable-node")
+                .run(context -> {
+                    TokenStore tokenStore = context.getBean(TokenStore.class);
+                    assertThat(tokenStore.retrieveStorageIdentifier())
+                            .isPresent()
+                            .contains("eventstoredb-stable-node");
+                });
+    }
+
+    @Test
+    void shouldGenerateRandomNodeIdWhenNotConfigured() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    TokenStore tokenStore = context.getBean(TokenStore.class);
+                    assertThat(tokenStore.retrieveStorageIdentifier())
+                            .isPresent()
+                            .hasValueSatisfying(id -> assertThat(id).startsWith("eventstoredb-"));
+                });
+    }
+
+    // ── maskConnectionString (tested indirectly via bean creation) ───────
+
+    @Test
+    void shouldMaskCredentialsInConnectionString() {
+        // This test validates that bean creation doesn't fail when credentials are in the conn string
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://admin:secretpass@localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EventStorageEngine.class);
+                });
+    }
+}

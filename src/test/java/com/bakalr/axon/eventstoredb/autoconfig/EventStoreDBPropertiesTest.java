@@ -1,0 +1,98 @@
+package com.bakalr.axon.eventstoredb.autoconfig;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class EventStoreDBPropertiesTest {
+
+  @Test
+  void shouldReturnExplicitConnectionString() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setConnectionString("esdb://node1:2113,node2:2113?tls=true");
+
+    assertEquals("esdb://node1:2113,node2:2113?tls=true", props.getEffectiveConnectionString());
+  }
+
+  @Test
+  void shouldBuildConnectionStringFromParts() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setHost("eventstore.local");
+    props.setPort(2113);
+    props.setTls(false);
+    props.setUsername(null); // no credentials
+    props.setPassword(null);
+
+    assertEquals("esdb://eventstore.local:2113?tls=false", props.getEffectiveConnectionString());
+  }
+
+  @Test
+  void shouldBuildConnectionStringWithCredentials() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setHost("eventstore.local");
+    props.setPort(2113);
+    props.setUsername("admin");
+    props.setPassword("changeit");
+    props.setTls(false);
+
+    assertEquals(
+        "esdb://admin:changeit@eventstore.local:2113?tls=false",
+        props.getEffectiveConnectionString());
+  }
+
+  @Test
+  void shouldBuildConnectionStringWithTlsNoVerify() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setHost("eventstore.local");
+    props.setPort(2113);
+    props.setUsername("admin");
+    props.setPassword("changeit");
+    props.setTls(true);
+    props.setTlsVerifyCert(false);
+
+    String connString = props.getEffectiveConnectionString();
+    assertTrue(connString.contains("tls=true"));
+    assertTrue(connString.contains("tlsVerifyCert=false"));
+  }
+
+  @Test
+  void shouldHaveSensibleDefaults() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+
+    assertFalse(props.isEnabled());
+    assertEquals("localhost", props.getHost());
+    assertEquals(2113, props.getPort());
+    assertFalse(props.isTls());
+    assertTrue(props.isTlsVerifyCert());
+    assertEquals("admin", props.getUsername());
+    assertNull(props.getPassword());
+    assertEquals(256, props.getBatchSize());
+    assertEquals("", props.getStreamPrefix());
+    assertEquals("__snapshot", props.getSnapshotStreamPrefix());
+    assertEquals("__axon-tokens", props.getTokenStreamPrefix());
+    assertNull(props.getNodeId());
+  }
+
+  @Test
+  void shouldPreferExplicitConnectionStringOverParts() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setConnectionString("esdb://override:2113");
+    props.setHost("should-be-ignored");
+    props.setPort(9999);
+
+    assertEquals("esdb://override:2113", props.getEffectiveConnectionString());
+  }
+
+  @Test
+  void shouldOmitCredentialsWhenUsernameIsNull() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setUsername(null);
+    props.setPassword(null);
+    props.setHost("localhost");
+    props.setPort(2113);
+    props.setTls(false);
+
+    String connString = props.getEffectiveConnectionString();
+    assertEquals("esdb://localhost:2113?tls=false", connString);
+  }
+}

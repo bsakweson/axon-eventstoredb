@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  Checkstyle configuration based on Google Java Style with project-specific tweaks.
+  See https://checkstyle.sourceforge.io/google_style.html
+-->
+<module name="Checker">
+    <property name="charset" value="UTF-8"/>
+    <property name="severity" value="warning"/>
+    <property name="fileExtensions" value="java"/>
+
+    <!-- Suppress checks on test sources for line length and javadoc -->
+    <module name="SuppressionSingleFilter">
+        <property name="files" value="src[\\/]test[\\/]"/>
+        <property name="checks" value="JavadocType|JavadocMethod|JavadocVariable|LineLength"/>
+    </module>
+
+    <!-- ── File-level checks ─────────────────────────────────────────── -->
+
+    <module name="NewlineAtEndOfFile"/>
+
+    <module name="FileLength">
+        <property name="max" value="800"/>
+    </module>
+
+    <module name="FileTabCharacter">
+        <property name="eachLine" value="true"/>
+    </module>
+
+    <!-- Trailing whitespace -->
+    <module name="RegexpSingleline">
+        <property name="format" value="\s+$"/>
+        <property name="message" value="Line has trailing whitespace."/>
+    </module>
+
+    <module name="LineLength">
+        <property name="max" value="120"/>
+        <property name="ignorePattern" value="^package.*|^import.*|a]? href|href|http://|https://|ftp://"/>
+    </module>
+
+    <!-- ── Tree Walker (AST-based checks) ────────────────────────────── -->
+    <module name="TreeWalker">
+
+        <!-- ── Naming conventions ──────────────────────────────────── -->
+        <module name="PackageName">
+            <property name="format" value="^[a-z]+(\.[a-z][a-z0-9]*)*$"/>
+        </module>
+        <module name="TypeName"/>
+        <module name="MethodName"/>
+        <module name="ParameterName"/>
+        <module name="LocalVariableName"/>
+        <module name="MemberName"/>
+        <module name="ConstantName">
+            <!-- Allow standard logger names like 'log' and 'logger' -->
+            <property name="format" value="^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$|^log(ger)?$"/>
+        </module>
+        <module name="StaticVariableName"/>
+
+        <!-- ── Imports ─────────────────────────────────────────────── -->
+        <module name="AvoidStarImport">
+            <property name="excludes" value="org.mockito.Mockito,org.assertj.core.api.Assertions,org.mockito.ArgumentMatchers"/>
+            <property name="allowStaticMemberImports" value="true"/>
+        </module>
+        <module name="RedundantImport"/>
+        <module name="UnusedImports"/>
+        <module name="IllegalImport"/>
+
+        <!-- ── Size / Complexity ───────────────────────────────────── -->
+        <module name="MethodLength">
+            <property name="max" value="80"/>
+        </module>
+        <module name="ParameterNumber">
+            <property name="max" value="8"/>
+        </module>
+
+        <!-- ── Whitespace ──────────────────────────────────────────── -->
+        <module name="GenericWhitespace"/>
+        <module name="MethodParamPad"/>
+        <module name="NoWhitespaceBefore"/>
+        <module name="ParenPad"/>
+        <module name="TypecastParenPad"/>
+        <module name="WhitespaceAfter"/>
+        <module name="WhitespaceAround">
+            <property name="allowEmptyConstructors" value="true"/>
+            <property name="allowEmptyMethods" value="true"/>
+            <property name="allowEmptyTypes" value="true"/>
+            <property name="allowEmptyLambdas" value="true"/>
+        </module>
+
+        <!-- ── Blocks ──────────────────────────────────────────────── -->
+        <module name="LeftCurly"/>
+        <module name="RightCurly"/>
+        <module name="NeedBraces">
+            <property name="allowSingleLineStatement" value="true"/>
+        </module>
+        <module name="EmptyBlock">
+            <property name="option" value="TEXT"/>
+        </module>
+
+        <!-- ── Coding ──────────────────────────────────────────────── -->
+        <module name="EmptyStatement"/>
+        <module name="EqualsHashCode"/>
+        <module name="MissingSwitchDefault"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="StringLiteralEquality"/>
+        <module name="OneStatementPerLine"/>
+        <module name="MultipleVariableDeclarations"/>
+        <module name="ArrayTypeStyle"/>
+        <module name="UpperEll"/>
+        <module name="FallThrough"/>
+        <module name="IllegalTokenText">
+            <property name="tokens" value="STRING_LITERAL, CHAR_LITERAL"/>
+            <property name="format" value="\\u00(09|0(a|A)|0(c|C)|0(d|D)|22|27|5(C|c))|\\(0(10|11|12|14|15|42|47)|134)"/>
+            <property name="message" value="Use special escape sequence instead of octal/unicode value."/>
+        </module>
+
+        <!-- ── Modifiers ───────────────────────────────────────────── -->
+        <module name="ModifierOrder"/>
+        <module name="RedundantModifier"/>
+
+        <!-- ── Annotations ─────────────────────────────────────────── -->
+        <module name="MissingOverride"/>
+        <module name="AnnotationLocation">
+            <property name="allowSamelineMultipleAnnotations" value="false"/>
+        </module>
+
+        <!-- ── Javadoc (main sources only, suppressed for tests) ──── -->
+        <module name="JavadocType">
+            <property name="scope" value="public"/>
+        </module>
+    </module>
+</module>

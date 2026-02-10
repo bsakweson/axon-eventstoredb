@@ -1,0 +1,238 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'signing'
+    id 'jacoco'
+    id 'checkstyle'
+    alias(libs.plugins.spotbugs)
+    alias(libs.plugins.spring.boot) apply false
+    alias(libs.plugins.spring.dependency.management)
+}
+
+group = 'com.bakalr.axon'
+version = '0.1.0-SNAPSHOT'
+description = 'Spring Boot starter for using EventStoreDB as an Axon Framework event store'
+
+dependencyManagement {
+    imports {
+        mavenBom org.springframework.boot.gradle.plugin.SpringBootPlugin.BOM_COORDINATES
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    withJavadocJar()
+    withSourcesJar()
+}
+
+jar {
+    enabled = true
+    manifest {
+        attributes(
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Automatic-Module-Name': 'com.bakalr.axon.eventstoredb'
+        )
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // ── Axon Framework (compile-time API) ────────────────────────────────
+    api libs.axon.eventsourcing
+    api libs.axon.messaging
+    api libs.axon.configuration
+
+    // ── EventStoreDB Java client (gRPC-based) ───────────────────────────
+    api libs.eventstoredb.client
+
+    // ── Spring Boot auto-configuration ───────────────────────────────────
+    implementation libs.spring.boot.autoconfigure
+    annotationProcessor libs.spring.boot.configuration.processor
+
+    // ── Jackson for serialization ────────────────────────────────────────
+    implementation libs.jackson.databind
+    implementation libs.jackson.jsr310
+
+    // ── Optional: Spring Boot starter (conditional annotations) ──────────
+    compileOnly libs.spring.boot.starter
+
+    // ── Jakarta Annotations (@Nonnull, @Nullable) ────────────────────────
+    compileOnly libs.jakarta.annotation.api
+
+    // ── Logging ──────────────────────────────────────────────────────────
+    implementation libs.slf4j.api
+
+    // ── Testing ──────────────────────────────────────────────────────────
+    testImplementation libs.spring.boot.starter.test
+    testImplementation libs.axon.test
+    testImplementation libs.junit.jupiter
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.core
+    testImplementation libs.mockito.junit.jupiter
+    testImplementation libs.testcontainers.junit.jupiter
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+// ── Integration Tests (require Docker) ───────────────────────────────────
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests with Testcontainers (requires Docker)'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    shouldRunAfter test
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        excludeTags 'integration'
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.addAll(['-parameters', '-Xlint:all,-processing'])
+}
+
+// ── Checkstyle ───────────────────────────────────────────────────────────────
+checkstyle {
+    toolVersion = '10.21.4'
+    configFile = file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
+}
+
+checkstyleTest {
+    // Relaxed for tests — only fail on errors, not warnings
+    maxWarnings = Integer.MAX_VALUE
+}
+
+// ── SpotBugs ─────────────────────────────────────────────────────────────────
+spotbugs {
+    effort = com.github.spotbugs.snom.Effort.valueOf('MAX')
+    reportLevel = com.github.spotbugs.snom.Confidence.valueOf('MEDIUM')
+    excludeFilter = file('config/spotbugs/exclude.xml')
+}
+
+tasks.withType(com.github.spotbugs.snom.SpotBugsTask).configureEach {
+    reports {
+        html.required = true
+        xml.required = false
+    }
+}
+
+// ── JaCoCo Coverage ──────────────────────────────────────────────────────
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+}
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.90
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn jacocoTestReport, jacocoTestCoverageVerification
+}
+
+tasks.named('javadoc') {
+    options {
+        encoding = 'UTF-8'
+        links(
+            'https://docs.oracle.com/en/java/javase/21/docs/api/',
+            'https://docs.spring.io/spring-boot/api/java/',
+            'https://apidocs.axoniq.io/4.11/'
+        )
+    }
+    // Don't fail on warnings
+    options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+// ── Maven Central publishing ─────────────────────────────────────────────
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            pom {
+                name = 'Axon EventStoreDB Spring Boot Starter'
+                description = project.description
+                url = 'https://github.com/bakalr/axon-eventstoredb'
+                inceptionYear = '2026'
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id = 'bakalr'
+                        name = 'Bakalr'
+                        url = 'https://github.com/bakalr'
+                    }
+                }
+
+                scm {
+                    connection = 'scm:git:git://github.com/bakalr/axon-eventstoredb.git'
+                    developerConnection = 'scm:git:ssh://github.com/bakalr/axon-eventstoredb.git'
+                    url = 'https://github.com/bakalr/axon-eventstoredb'
+                }
+
+                issueManagement {
+                    system = 'GitHub Issues'
+                    url = 'https://github.com/bakalr/axon-eventstoredb/issues'
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = 'OSSRH'
+            def releasesRepoUrl = 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
+            def snapshotsRepoUrl = 'https://s01.oss.sonatype.org/content/repositories/snapshots/'
+            url = version.toString().endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+
+            credentials {
+                username = findProperty('ossrhUsername') ?: System.getenv('OSSRH_USERNAME')
+                password = findProperty('ossrhPassword') ?: System.getenv('OSSRH_PASSWORD')
+            }
+        }
+    }
+}
+
+signing {
+    // Only sign for releases (not SNAPSHOT)
+    required = { !version.toString().endsWith('SNAPSHOT') && gradle.taskGraph.hasTask('publish') }
+
+    // In CI: use in-memory key from environment variables
+    def signingKey = findProperty('signingKey') ?: System.getenv('GPG_PRIVATE_KEY')
+    def signingPassword = findProperty('signingPassword') ?: System.getenv('GPG_PASSPHRASE')
+    if (signingKey) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+    }
+
+    sign publishing.publications.mavenJava
+}

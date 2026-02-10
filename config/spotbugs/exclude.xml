@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!--
+      SpotBugs exclusion filter for axon-eventstoredb.
+      Suppresses false positives and intentional patterns.
+    -->
+
+    <!-- Exclude test sources entirely -->
+    <Match>
+        <Source name="~.*Test\.java"/>
+    </Match>
+    <Match>
+        <Source name="~.*IT\.java"/>
+    </Match>
+
+    <!-- Suppress EI_EXPOSE_REP / EI_EXPOSE_REP2 on constructors storing client/naming refs -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!-- Constructor throwing exceptions is acceptable for validation -->
+    <Match>
+        <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+    </Match>
+
+    <!-- InterruptedException re-thrown as EventStoreException after restoring flag — intentional -->
+    <Match>
+        <Bug pattern="DE_MIGHT_IGNORE"/>
+    </Match>
+
+    <!-- Allow serialization-related patterns in the tracking token -->
+    <Match>
+        <Class name="com.bakalr.axon.eventstoredb.EventStoreDBTrackingToken"/>
+        <Bug pattern="SE_NO_SERIALVERSIONID"/>
+    </Match>
+</FindBugsFilter>

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Git pre-commit hook for axon-eventstoredb
+#
+# Runs code quality checks and unit tests before allowing a commit.
+# Install: ./scripts/install-hooks.sh (or manually symlink to .git/hooks/pre-commit)
+#
+set -euo pipefail
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${YELLOW}▸ Running pre-commit checks...${NC}"
+echo ""
+
+# Only check if Java files are staged
+STAGED_JAVA=$(git diff --cached --name-only --diff-filter=ACM | grep '\.java$' || true)
+STAGED_GRADLE=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.gradle(\.kts)?$|\.toml$' || true)
+
+if [[ -z "$STAGED_JAVA" && -z "$STAGED_GRADLE" ]]; then
+    echo -e "${GREEN}✓ No Java/Gradle files staged — skipping checks.${NC}"
+    exit 0
+fi
+
+# ── 1. Compile ────────────────────────────────────────────────────────────────
+echo -e "${YELLOW}▸ [1/4] Compiling...${NC}"
+if ! ./gradlew compileJava compileTestJava --quiet 2>/dev/null; then
+    echo -e "${RED}✗ Compilation failed. Fix errors before committing.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Compilation passed${NC}"
+
+# ── 2. Checkstyle ─────────────────────────────────────────────────────────────
+echo -e "${YELLOW}▸ [2/4] Checkstyle...${NC}"
+if ! ./gradlew checkstyleMain --quiet 2>/dev/null; then
+    echo -e "${RED}✗ Checkstyle violations found. See build/reports/checkstyle/main.html${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Checkstyle passed${NC}"
+
+# ── 3. SpotBugs ──────────────────────────────────────────────────────────────
+echo -e "${YELLOW}▸ [3/4] SpotBugs...${NC}"
+if ! ./gradlew spotbugsMain --quiet 2>/dev/null; then
+    echo -e "${RED}✗ SpotBugs issues found. See build/reports/spotbugs/main.html${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ SpotBugs passed${NC}"
+
+# ── 4. Unit Tests ─────────────────────────────────────────────────────────────
+echo -e "${YELLOW}▸ [4/4] Unit tests...${NC}"
+if ! ./gradlew test --quiet 2>/dev/null; then
+    echo -e "${RED}✗ Unit tests failed. See build/reports/tests/test/index.html${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Unit tests passed${NC}"
+
+echo ""
+echo -e "${GREEN}✓ All pre-commit checks passed!${NC}"

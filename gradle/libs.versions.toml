@@ -1,0 +1,51 @@
+[versions]
+# ── Core ──────────────────────────────────────────────────────────────────────
+axon = "4.11.2"
+eventstoredb = "5.4.5"
+spring-boot = "3.5.10"
+spring-dependency-management = "1.1.7"
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+junit = "5.12.2"
+assertj = "3.25.1"
+mockito = "5.8.0"
+testcontainers = "1.20.4"
+
+[libraries]
+# ── Axon Framework ────────────────────────────────────────────────────────────
+axon-eventsourcing = { module = "org.axonframework:axon-eventsourcing", version.ref = "axon" }
+axon-messaging = { module = "org.axonframework:axon-messaging", version.ref = "axon" }
+axon-configuration = { module = "org.axonframework:axon-configuration", version.ref = "axon" }
+axon-test = { module = "org.axonframework:axon-test", version.ref = "axon" }
+
+# ── EventStoreDB ──────────────────────────────────────────────────────────────
+eventstoredb-client = { module = "com.eventstore:db-client-java", version.ref = "eventstoredb" }
+
+# ── Spring Boot (versions managed by BOM) ─────────────────────────────────────
+spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
+spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
+spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+
+# ── Jackson (versions managed by BOM) ─────────────────────────────────────────
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind" }
+jackson-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310" }
+
+# ── Jakarta Annotations ───────────────────────────────────────────────────────
+jakarta-annotation-api = { module = "jakarta.annotation:jakarta.annotation-api" }
+
+# ── Logging (version managed by BOM) ──────────────────────────────────────────
+slf4j-api = { module = "org.slf4j:slf4j-api" }
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+mockito-junit-jupiter = { module = "org.mockito:mockito-junit-jupiter", version.ref = "mockito" }
+testcontainers-junit-jupiter = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "spring-dependency-management" }
+spotbugs = { id = "com.github.spotbugs", version = "6.1.7" }

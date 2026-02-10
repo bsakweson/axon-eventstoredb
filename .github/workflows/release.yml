@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0, 1.0.0)'
+        required: true
+        type: string
+      next-version:
+        description: 'Next development version (e.g. 0.2.0). -SNAPSHOT suffix is added automatically.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Gate: run full CI first ───────────────────────────────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Code quality
+        run: ./gradlew checkstyleMain spotbugsMain
+
+      - name: Build & test
+        run: ./gradlew build -x integrationTest
+
+      - name: Integration tests
+        run: ./gradlew integrationTest
+
+  # ── Release: publish to Maven Central + tag ───────────────────────────
+  release:
+    name: Publish & Tag
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ── Set release version ──────────────────────────────────────────
+      - name: Set release version
+        run: |
+          RELEASE_VERSION="${{ inputs.version }}"
+          echo "Setting version to ${RELEASE_VERSION}"
+          sed -i "s/^version = .*/version = '${RELEASE_VERSION}'/" build.gradle
+          git add build.gradle
+          git commit -m "release: set version ${RELEASE_VERSION}"
+
+      # ── Build the release artifacts ──────────────────────────────────
+      - name: Build release
+        run: ./gradlew build -x integrationTest -x test
+
+      # ── Publish to Maven Central (OSSRH) ─────────────────────────────
+      - name: Publish to Maven Central
+        env:
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: ./gradlew publish
+
+      # ── Tag & GitHub Release ─────────────────────────────────────────
+      - name: Create tag
+        run: |
+          RELEASE_VERSION="${{ inputs.version }}"
+          git tag -a "v${RELEASE_VERSION}" -m "Release ${RELEASE_VERSION}"
+          git push origin "v${RELEASE_VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_VERSION="${{ inputs.version }}"
+          gh release create "v${RELEASE_VERSION}" \
+            --title "v${RELEASE_VERSION}" \
+            --generate-notes \
+            build/libs/*-${RELEASE_VERSION}.jar \
+            build/libs/*-${RELEASE_VERSION}-javadoc.jar \
+            build/libs/*-${RELEASE_VERSION}-sources.jar
+
+      # ── Bump to next SNAPSHOT ────────────────────────────────────────
+      - name: Prepare next development version
+        run: |
+          NEXT_VERSION="${{ inputs.next-version }}-SNAPSHOT"
+          echo "Bumping version to ${NEXT_VERSION}"
+          sed -i "s/^version = .*/version = '${NEXT_VERSION}'/" build.gradle
+          git add build.gradle
+          git commit -m "chore: bump version to ${NEXT_VERSION}"
+          git push origin main
