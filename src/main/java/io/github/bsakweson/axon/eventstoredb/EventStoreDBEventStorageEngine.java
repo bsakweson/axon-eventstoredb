@@ -1,7 +1,7 @@
-package com.bakalr.axon.eventstoredb;
+package io.github.bsakweson.axon.eventstoredb;
 
-import com.bakalr.axon.eventstoredb.util.EventStoreDBSerializer;
-import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBSerializer;
+import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.EventData;
 import com.eventstore.dbclient.EventStoreDBClient;

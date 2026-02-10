@@ -1,4 +1,4 @@
-package com.bakalr.axon.eventstoredb;
+package io.github.bsakweson.axon.eventstoredb;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;

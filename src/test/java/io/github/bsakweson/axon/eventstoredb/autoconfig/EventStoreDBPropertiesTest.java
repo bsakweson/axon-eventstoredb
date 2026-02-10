@@ -1,4 +1,4 @@
-package com.bakalr.axon.eventstoredb.autoconfig;
+package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
 import org.junit.jupiter.api.Test;
 

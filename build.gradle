@@ -9,7 +9,7 @@ plugins {
     alias(libs.plugins.spring.dependency.management)
 }
 
-group = 'com.bakalr.axon'
+group = 'io.github.bsakweson'
 version = '0.1.0-SNAPSHOT'
 description = 'Spring Boot starter for using EventStoreDB as an Axon Framework event store'
 
@@ -32,7 +32,7 @@ jar {
         attributes(
             'Implementation-Title': project.name,
             'Implementation-Version': project.version,
-            'Automatic-Module-Name': 'com.bakalr.axon.eventstoredb'
+            'Automatic-Module-Name': 'io.github.bsakweson.axon.eventstoredb'
         )
     }
 }
@@ -176,7 +176,7 @@ publishing {
             pom {
                 name = 'Axon EventStoreDB Spring Boot Starter'
                 description = project.description
-                url = 'https://github.com/bakalr/axon-eventstoredb'
+                url = 'https://github.com/bsakweson/axon-eventstoredb'
                 inceptionYear = '2026'
 
                 licenses {
@@ -188,21 +188,21 @@ publishing {
 
                 developers {
                     developer {
-                        id = 'bakalr'
-                        name = 'Bakalr'
-                        url = 'https://github.com/bakalr'
+                        id = 'bsakweson'
+                        name = 'bsakweson'
+                        url = 'https://github.com/bsakweson'
                     }
                 }
 
                 scm {
-                    connection = 'scm:git:git://github.com/bakalr/axon-eventstoredb.git'
-                    developerConnection = 'scm:git:ssh://github.com/bakalr/axon-eventstoredb.git'
-                    url = 'https://github.com/bakalr/axon-eventstoredb'
+                    connection = 'scm:git:git://github.com/bsakweson/axon-eventstoredb.git'
+                    developerConnection = 'scm:git:ssh://github.com/bsakweson/axon-eventstoredb.git'
+                    url = 'https://github.com/bsakweson/axon-eventstoredb'
                 }
 
                 issueManagement {
                     system = 'GitHub Issues'
-                    url = 'https://github.com/bakalr/axon-eventstoredb/issues'
+                    url = 'https://github.com/bsakweson/axon-eventstoredb/issues'
                 }
             }
         }

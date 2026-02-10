@@ -1,6 +1,6 @@
-package com.bakalr.axon.eventstoredb;
+package io.github.bsakweson.axon.eventstoredb;
 
-import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.DeleteResult;
 import com.eventstore.dbclient.DeleteStreamOptions;
@@ -126,7 +126,7 @@ class EventStoreDBTokenStoreTest {
     void shouldFetchStoredToken() throws Exception {
         EventStoreDBTrackingToken expectedToken = EventStoreDBTrackingToken.of(200L, 200L);
         String json = "{\"processorName\":\"my-processor\",\"segmentId\":0,"
-                + "\"token\":{\"@class\":\"com.bakalr.axon.eventstoredb.EventStoreDBTrackingToken\","
+                + "\"token\":{\"@class\":\"io.github.bsakweson.axon.eventstoredb.EventStoreDBTrackingToken\","
                 + "\"commitPosition\":200,\"preparePosition\":200},"
                 + "\"owner\":\"test-node\",\"timestamp\":\"2026-02-09T10:00:00Z\"}";
 
@@ -372,7 +372,7 @@ class EventStoreDBTokenStoreTest {
     void shouldExtendClaimByRestoringToken() throws Exception {
         // fetchToken returns a token
         String json = "{\"processorName\":\"my-processor\",\"segmentId\":0,"
-                + "\"token\":{\"@class\":\"com.bakalr.axon.eventstoredb.EventStoreDBTrackingToken\","
+                + "\"token\":{\"@class\":\"io.github.bsakweson.axon.eventstoredb.EventStoreDBTrackingToken\","
                 + "\"commitPosition\":100,\"preparePosition\":100},"
                 + "\"owner\":\"test-node\",\"timestamp\":\"2026-02-09T10:00:00Z\"}";
 

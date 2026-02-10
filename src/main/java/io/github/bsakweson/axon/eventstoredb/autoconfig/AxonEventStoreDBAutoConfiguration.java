@@ -1,8 +1,8 @@
-package com.bakalr.axon.eventstoredb.autoconfig;
+package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
-import com.bakalr.axon.eventstoredb.EventStoreDBEventStorageEngine;
-import com.bakalr.axon.eventstoredb.EventStoreDBTokenStore;
-import com.bakalr.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import io.github.bsakweson.axon.eventstoredb.EventStoreDBEventStorageEngine;
+import io.github.bsakweson.axon.eventstoredb.EventStoreDBTokenStore;
+import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;

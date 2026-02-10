@@ -1,1 +1,1 @@
-com.bakalr.axon.eventstoredb.autoconfig.AxonEventStoreDBAutoConfiguration
+io.github.bsakweson.axon.eventstoredb.autoconfig.AxonEventStoreDBAutoConfiguration

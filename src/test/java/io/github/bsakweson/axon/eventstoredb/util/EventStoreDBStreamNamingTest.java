@@ -1,4 +1,4 @@
-package com.bakalr.axon.eventstoredb.util;
+package io.github.bsakweson.axon.eventstoredb.util;
 
 import org.junit.jupiter.api.Test;
 

@@ -1,4 +1,4 @@
-package com.bakalr.axon.eventstoredb;
+package io.github.bsakweson.axon.eventstoredb;
 
 import org.axonframework.eventhandling.TrackingToken;
 import org.junit.jupiter.api.Test;

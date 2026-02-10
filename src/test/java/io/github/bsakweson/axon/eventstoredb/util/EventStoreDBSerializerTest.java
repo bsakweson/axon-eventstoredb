@@ -1,4 +1,4 @@
-package com.bakalr.axon.eventstoredb.util;
+package io.github.bsakweson.axon.eventstoredb.util;
 
 import com.eventstore.dbclient.EventData;
 import com.eventstore.dbclient.RecordedEvent;
@@ -120,7 +120,7 @@ class EventStoreDBSerializerTest {
 
         EventData eventData = serializer.serialize(domainEvent);
 
-        assertThat(eventData.getEventType()).doesNotContain("com.bakalr");
+        assertThat(eventData.getEventType()).doesNotContain("io.github.bsakweson");
     }
 
     @Test
