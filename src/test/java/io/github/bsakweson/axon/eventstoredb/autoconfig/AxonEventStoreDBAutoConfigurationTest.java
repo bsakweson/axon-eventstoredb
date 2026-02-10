@@ -272,6 +272,45 @@ class AxonEventStoreDBAutoConfigurationTest {
                 });
     }
 
+    @Test
+    void shouldCreateMetricsBeanWhenMicrometerAvailable() {
+        contextRunner
+                .withUserConfiguration(MeterRegistryConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(
+                            io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+                });
+    }
+
+    @Test
+    void shouldNotCreateMetricsBeanWhenDisabled() {
+        contextRunner
+                .withUserConfiguration(MeterRegistryConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.metrics.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(
+                            io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+                });
+    }
+
+    @Test
+    void shouldNotCreateMetricsBeanWithoutMeterRegistry() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(
+                            io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+                });
+    }
+
     // ── Claims configuration ────────────────────────────────────────────
 
     @Test
@@ -460,12 +499,14 @@ class AxonEventStoreDBAutoConfigurationTest {
     @Test
     void shouldCreateEngineWithUpcasterAndMetrics() {
         contextRunner
-                .withUserConfiguration(UpcasterAndMetricsConfiguration.class)
+                .withUserConfiguration(UpcasterConfiguration.class, MeterRegistryConfiguration.class)
                 .withPropertyValues(
                         "axon.eventstoredb.enabled=true",
                         "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
                 .run(context -> {
                     assertThat(context).hasSingleBean(EventStorageEngine.class);
+                    assertThat(context).hasSingleBean(
+                            io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
                 });
     }
 
@@ -504,16 +545,18 @@ class AxonEventStoreDBAutoConfigurationTest {
     }
 
     @Configuration
-    static class UpcasterAndMetricsConfiguration {
+    static class UpcasterConfiguration {
         @Bean
         public org.axonframework.serialization.upcasting.event.EventUpcaster eventUpcaster() {
             return stream -> stream;  // identity upcaster
         }
+    }
 
+    @Configuration
+    static class MeterRegistryConfiguration {
         @Bean
-        public io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics eventStoreDBMetrics() {
-            return new io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics(
-                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        public io.micrometer.core.instrument.MeterRegistry meterRegistry() {
+            return new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
         }
     }
 }

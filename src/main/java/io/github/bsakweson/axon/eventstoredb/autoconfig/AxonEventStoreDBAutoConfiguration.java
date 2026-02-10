@@ -12,6 +12,7 @@ import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;
 import com.eventstore.dbclient.EventStoreDBPersistentSubscriptionsClient;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import java.time.Duration;
 import java.util.UUID;
@@ -26,11 +27,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 /**
  * Spring Boot auto-configuration for Axon Framework EventStoreDB integration.
@@ -46,6 +49,7 @@ import org.springframework.context.annotation.Bean;
  *   <li>{@link EventStoreDBClient} — gRPC client</li>
  *   <li>{@link EventStoreDBStreamNaming} — stream naming conventions</li>
  *   <li>{@link EventStoreDBRetryExecutor} — retry with exponential backoff</li>
+ *   <li>{@link EventStoreDBMetrics} — Micrometer instrumentation (when available)</li>
  *   <li>{@link EventStorageEngine} — EventStoreDB-backed event storage</li>
  *   <li>{@link TokenStore} — EventStoreDB-backed tracking token store</li>
  * </ul>
@@ -102,6 +106,27 @@ public class AxonEventStoreDBAutoConfiguration {
         .build();
     log.info("Configuring EventStoreDB retry: {}", policy);
     return new EventStoreDBRetryExecutor(policy);
+  }
+
+  // ── Metrics ─────────────────────────────────────────────────────────────
+
+  @Configuration
+  @ConditionalOnClass(MeterRegistry.class)
+  static class MetricsAutoConfiguration {
+
+    private static final Logger metricsLog =
+        LoggerFactory.getLogger(MetricsAutoConfiguration.class);
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(MeterRegistry.class)
+    @ConditionalOnProperty(
+        prefix = "axon.eventstoredb.metrics", name = "enabled",
+        havingValue = "true", matchIfMissing = true)
+    public EventStoreDBMetrics eventStoreDBMetrics(MeterRegistry meterRegistry) {
+      metricsLog.info("Configuring EventStoreDB Micrometer metrics");
+      return new EventStoreDBMetrics(meterRegistry);
+    }
   }
 
   // ── Event Storage Engine ───────────────────────────────────────────────
