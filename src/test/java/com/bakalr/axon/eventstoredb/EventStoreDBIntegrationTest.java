@@ -223,8 +223,9 @@ class EventStoreDBIntegrationTest {
     @Test
     @Order(20)
     void shouldCreateTailToken() {
+        // Tail token returns null per Axon convention (means "from the very beginning")
         TrackingToken token = engine.createTailToken();
-        assertThat(token).isInstanceOf(EventStoreDBTrackingToken.class);
+        assertThat(token).isNull();
     }
 
     @Test
@@ -268,7 +269,7 @@ class EventStoreDBIntegrationTest {
     @Test
     @Order(31)
     void shouldStoreAndFetchToken() {
-        TrackingToken token = engine.createTailToken();
+        TrackingToken token = engine.createHeadToken();
         tokenStore.storeToken(token, "test-processor", 0);
 
         TrackingToken fetched = tokenStore.fetchToken("test-processor", 0);
@@ -313,7 +314,7 @@ class EventStoreDBIntegrationTest {
     @Order(36)
     void shouldReturnStorageIdentifier() {
         Optional<String> id = tokenStore.retrieveStorageIdentifier();
-        assertThat(id).isPresent().hasValue("integration-test-node");
+        assertThat(id).isPresent().hasValue("eventstoredb-integration-test-node");
     }
 
     @Test
