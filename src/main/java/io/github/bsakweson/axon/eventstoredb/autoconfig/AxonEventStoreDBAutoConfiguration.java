@@ -5,11 +5,13 @@ import io.github.bsakweson.axon.eventstoredb.EventStoreDBTokenStore;
 import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
 import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
 import io.github.bsakweson.axon.eventstoredb.resilience.RetryPolicy;
+import io.github.bsakweson.axon.eventstoredb.subscriptions.EventStoreDBPersistentSubscriptionMessageSource;
 import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;
+import com.eventstore.dbclient.EventStoreDBPersistentSubscriptionsClient;
 
 import java.time.Duration;
 import java.util.UUID;
@@ -124,6 +126,53 @@ public class AxonEventStoreDBAutoConfiguration {
         eventUpcaster, retryExecutor, metrics);
   }
 
+  // ── Persistent Subscriptions ─────────────────────────────────────────
+
+  @Bean
+  @ConditionalOnMissingBean(EventStoreDBPersistentSubscriptionsClient.class)
+  @ConditionalOnProperty(
+      prefix = "axon.eventstoredb.subscription", name = "enabled", havingValue = "true")
+  public EventStoreDBPersistentSubscriptionsClient eventStoreDBPersistentSubscriptionsClient(
+      EventStoreDBProperties properties) {
+    String connString = properties.getEffectiveConnectionString();
+    EventStoreDBClientSettings settings =
+        EventStoreDBConnectionString.parseOrThrow(connString);
+    log.info("Creating EventStoreDB persistent subscriptions client");
+    return EventStoreDBPersistentSubscriptionsClient.create(settings);
+  }
+
+  @Bean
+  @ConditionalOnMissingBean(EventStoreDBPersistentSubscriptionMessageSource.class)
+  @ConditionalOnProperty(
+      prefix = "axon.eventstoredb.subscription", name = "enabled", havingValue = "true")
+  public EventStoreDBPersistentSubscriptionMessageSource persistentSubscriptionMessageSource(
+      EventStoreDBPersistentSubscriptionsClient subscriptionClient,
+      @Qualifier("eventSerializer") Serializer eventSerializer,
+      EventStoreDBStreamNaming streamNaming,
+      EventStoreDBProperties properties,
+      @Autowired(required = false) EventStoreDBMetrics metrics) {
+
+    EventStoreDBProperties.Subscription subProps = properties.getSubscription();
+    log.info("Configuring persistent subscription source (group={}, buffer={}, autoCreate={})",
+        subProps.getGroupName(), subProps.getBufferSize(), subProps.isCreateIfNotExists());
+
+    EventStoreDBPersistentSubscriptionMessageSource source =
+        EventStoreDBPersistentSubscriptionMessageSource.builder()
+            .subscriptionClient(subscriptionClient)
+            .eventSerializer(eventSerializer)
+            .naming(streamNaming)
+            .groupName(subProps.getGroupName())
+            .bufferSize(subProps.getBufferSize())
+            .metrics(metrics)
+            .build();
+
+    if (subProps.isCreateIfNotExists()) {
+      source.createSubscriptionIfNotExists();
+    }
+
+    return source;
+  }
+
   // ── Token Store ────────────────────────────────────────────────────────
 
   @Bean
@@ -171,9 +220,6 @@ public class AxonEventStoreDBAutoConfiguration {
    * Masks credentials in connection strings for safe logging.
    */
   private String maskConnectionString(String connString) {
-    if (connString == null) {
-      return "null";
-    }
     return connString.replaceAll("(://[^:]+:)[^@]+(@)", "$1****$2");
   }
 }

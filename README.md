@@ -111,6 +111,10 @@ Events are stored in stream `Order-{orderId}` in EventStoreDB.
 | `axon.eventstoredb.metrics.enabled` | `true` | Enable Micrometer metrics (requires `micrometer-core`) |
 | `axon.eventstoredb.claims.enabled` | `false` | Enable distributed token claim management |
 | `axon.eventstoredb.claims.timeout-seconds` | `30` | Claim expiry timeout in seconds |
+| `axon.eventstoredb.subscription.enabled` | `false` | Enable persistent subscription message source |
+| `axon.eventstoredb.subscription.group-name` | — | Persistent subscription group name (required when enabled) |
+| `axon.eventstoredb.subscription.buffer-size` | `256` | Local event buffer size |
+| `axon.eventstoredb.subscription.create-if-not-exists` | `true` | Auto-create subscription if it doesn't exist |
 
 ## Architecture
 
@@ -358,9 +362,28 @@ graph TD
 
 The library provides an Axon `StreamableMessageSource` backed by EventStoreDB's [persistent subscriptions](https://developers.eventstore.com/clients/grpc/persistent-subscriptions.html). This enables **competing-consumer** patterns where multiple application nodes process events from the `$all` stream without duplicating work.
 
-> **Note:** Persistent subscriptions require manual bean wiring (no auto-configuration). This is by design — the group name, buffer size, and filter options are application-specific and should be configured explicitly.
+### Enable via Configuration
 
-### Configuration
+```yaml
+axon:
+  eventstoredb:
+    subscription:
+      enabled: true
+      group-name: my-processor-group
+      buffer-size: 256
+      create-if-not-exists: true
+```
+
+When enabled, the auto-configuration creates an `EventStoreDBPersistentSubscriptionsClient` and an `EventStoreDBPersistentSubscriptionMessageSource` bean automatically. Then register it with an Axon tracking processor:
+
+```java
+configurer.registerTrackingEventProcessor("myProcessor",
+        conf -> conf.getComponent(EventStoreDBPersistentSubscriptionMessageSource.class));
+```
+
+### Manual Bean Wiring (Advanced)
+
+For full control over the subscription source, you can disable auto-configuration and create the bean yourself:
 
 ```java
 @Bean
@@ -368,20 +391,12 @@ public EventStoreDBPersistentSubscriptionMessageSource persistentSource(
         EventStoreDBPersistentSubscriptionsClient client,
         Serializer serializer) {
     return EventStoreDBPersistentSubscriptionMessageSource.builder()
-            .client(client)
-            .serializer(serializer)
+            .subscriptionClient(client)
+            .eventSerializer(serializer)
             .groupName("my-processor-group")
             .bufferSize(256)
-            .createSubscriptionIfNotExists(true)
             .build();
 }
-```
-
-Then register it with an Axon tracking processor:
-
-```java
-configurer.registerTrackingEventProcessor("myProcessor",
-        conf -> persistentSource);
 ```
 
 ### How Subscription Works

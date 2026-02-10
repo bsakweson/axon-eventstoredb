@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Explicit claim release for graceful shutdown
 - `EventStoreDBTokenStore` integration with `DistributedTokenClaimManager` for optional distributed claims
 - Auto-configuration for `DistributedTokenClaimManager` via `axon.eventstoredb.claims.enabled`
+- Auto-configuration for `EventStoreDBPersistentSubscriptionMessageSource` via `axon.eventstoredb.subscription.enabled`
+- Auto-configuration for `EventStoreDBPersistentSubscriptionsClient` when subscriptions are enabled
 - `EventStoreDBProperties.Claims` configuration class (`claims.enabled`, `claims.timeout-seconds`)
+- `EventStoreDBProperties.Subscription` configuration class (`subscription.enabled`, `subscription.group-name`, `subscription.buffer-size`, `subscription.create-if-not-exists`)
+- Release pipeline auto-updates README dependency versions and CHANGELOG on release
 - Phase 3 integration tests (28 tests) covering persistent subscriptions, distributed claims, claim expiry, and multi-segment scenarios
 
 ### Fixed

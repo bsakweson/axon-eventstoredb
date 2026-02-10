@@ -724,4 +724,188 @@ class EventStoreDBPersistentSubscriptionMessageSourceTest {
         .metrics(metrics)
         .build();
   }
+
+  // ── Additional branch coverage ──────────────────────────────────────
+
+  @Test
+  void shouldReturnEventsWithoutMetricsWhenMetricsNull() throws Exception {
+    // Build source without metrics (null path)
+    EventStoreDBPersistentSubscriptionMessageSource sourceNoMetrics =
+        EventStoreDBPersistentSubscriptionMessageSource.builder()
+            .subscriptionClient(subscriptionClient)
+            .eventSerializer(eventSerializer)
+            .naming(naming)
+            .groupName("no-metrics-group")
+            .bufferSize(10)
+            .metrics(null)
+            .build();
+
+    // Simulate starting and receiving events
+    PersistentSubscription mockSub = mock(PersistentSubscription.class);
+    ArgumentCaptor<PersistentSubscriptionListener> listenerCaptor =
+        ArgumentCaptor.forClass(PersistentSubscriptionListener.class);
+
+    when(subscriptionClient.subscribeToAll(
+        eq("no-metrics-group"), any(SubscribePersistentSubscriptionOptions.class),
+        listenerCaptor.capture()))
+        .thenReturn(CompletableFuture.completedFuture(mockSub));
+
+    sourceNoMetrics.start();
+
+    // Push an event via the captured listener
+    ResolvedEvent event = mockValidDomainEvent("Order-1", 100, 100);
+    listenerCaptor.getValue().onEvent(mockSub, 0, event);
+
+    // Non-blocking read
+    Stream<? extends TrackedEventMessage<?>> result =
+        sourceNoMetrics.readEvents(null, false);
+    assertThat(result.count()).isEqualTo(1);
+
+    sourceNoMetrics.stop();
+  }
+
+  @Test
+  void shouldReturnEventsFromBlockingRead() throws Exception {
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("blocking-group");
+
+    PersistentSubscription mockSub = mock(PersistentSubscription.class);
+    ArgumentCaptor<PersistentSubscriptionListener> listenerCaptor =
+        ArgumentCaptor.forClass(PersistentSubscriptionListener.class);
+
+    when(subscriptionClient.subscribeToAll(
+        eq("blocking-group"), any(SubscribePersistentSubscriptionOptions.class),
+        listenerCaptor.capture()))
+        .thenReturn(CompletableFuture.completedFuture(mockSub));
+
+    source.start();
+
+    // Push events
+    ResolvedEvent event1 = mockValidDomainEvent("Order-1", 100, 100);
+    ResolvedEvent event2 = mockValidDomainEvent("Order-2", 200, 200);
+    listenerCaptor.getValue().onEvent(mockSub, 0, event1);
+    listenerCaptor.getValue().onEvent(mockSub, 0, event2);
+
+    // Blocking read should find events
+    Stream<? extends TrackedEventMessage<?>> result =
+        source.readEvents(null, true);
+    assertThat(result.count()).isGreaterThanOrEqualTo(1);
+
+    source.stop();
+  }
+
+  @Test
+  void shouldHandleAlreadyExistsErrorWithNullMessageInChain() throws Exception {
+    // Exception chain: RuntimeException(null) -> RuntimeException("already exists")
+    RuntimeException rootCause = new RuntimeException("already exists");
+    RuntimeException wrappingNull = new RuntimeException(null, rootCause);
+    Exception topLevel = new Exception(wrappingNull);
+
+    when(subscriptionClient.createToAll(eq("null-msg-group"), any(CreatePersistentSubscriptionToAllOptions.class)))
+        .thenReturn(CompletableFuture.failedFuture(topLevel));
+
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("null-msg-group");
+
+    // Should not throw — should detect "already exists" deeper in the chain
+    assertThatCode(() -> source.createSubscriptionIfNotExists()).doesNotThrowAnyException();
+  }
+
+  @Test
+  void shouldRecordErrorOnCancellationWithNonNullThrowable() throws Exception {
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("cancel-group");
+
+    PersistentSubscription mockSub = mock(PersistentSubscription.class);
+    ArgumentCaptor<PersistentSubscriptionListener> listenerCaptor =
+        ArgumentCaptor.forClass(PersistentSubscriptionListener.class);
+
+    when(subscriptionClient.subscribeToAll(
+        eq("cancel-group"), any(SubscribePersistentSubscriptionOptions.class),
+        listenerCaptor.capture()))
+        .thenReturn(CompletableFuture.completedFuture(mockSub));
+
+    source.start();
+    assertThat(source.isRunning()).isTrue();
+
+    // Trigger cancellation with an error
+    listenerCaptor.getValue().onCancelled(mockSub, new RuntimeException("connection lost"));
+
+    assertThat(source.isRunning()).isFalse();
+    verify(metrics).recordError("persistentSubscription");
+  }
+
+  @Test
+  void shouldHandleCancellationWithoutThrowable() throws Exception {
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("cancel-clean-group");
+
+    PersistentSubscription mockSub = mock(PersistentSubscription.class);
+    ArgumentCaptor<PersistentSubscriptionListener> listenerCaptor =
+        ArgumentCaptor.forClass(PersistentSubscriptionListener.class);
+
+    when(subscriptionClient.subscribeToAll(
+        eq("cancel-clean-group"), any(SubscribePersistentSubscriptionOptions.class),
+        listenerCaptor.capture()))
+        .thenReturn(CompletableFuture.completedFuture(mockSub));
+
+    source.start();
+    assertThat(source.isRunning()).isTrue();
+
+    // Trigger clean cancellation (null throwable) — metrics.recordError should NOT be called
+    listenerCaptor.getValue().onCancelled(mockSub, null);
+
+    assertThat(source.isRunning()).isFalse();
+    verify(metrics, never()).recordError(anyString());
+  }
+
+  // ── Additional branch coverage round 2 ────────────────────────────────
+
+  @Test
+  void shouldStopGracefullyWhenSubscriptionIsNull() throws Exception {
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("null-sub-stop");
+    // Force running=true without a subscription via reflection
+    java.lang.reflect.Field runningField =
+        EventStoreDBPersistentSubscriptionMessageSource.class.getDeclaredField("running");
+    runningField.setAccessible(true);
+    ((java.util.concurrent.atomic.AtomicBoolean) runningField.get(source)).set(true);
+
+    // stop() should handle null subscription gracefully
+    source.stop();
+    assertThat(source.isRunning()).isFalse();
+  }
+
+  @Test
+  void shouldReturnEmptyStreamWhenBlockingPollTimesOut() {
+    EventStoreDBPersistentSubscriptionMessageSource source = buildSource("timeout-group");
+    // readEvents with mayBlock=true on empty buffer — poll times out, first==null
+    Stream<? extends TrackedEventMessage<?>> result = source.readEvents(null, true);
+    assertThat(result.count()).isZero();
+  }
+
+  @Test
+  void shouldHandleCancellationWithErrorWithoutMetrics() throws Exception {
+    EventStoreDBPersistentSubscriptionMessageSource source =
+        EventStoreDBPersistentSubscriptionMessageSource.builder()
+            .subscriptionClient(subscriptionClient)
+            .eventSerializer(eventSerializer)
+            .naming(naming)
+            .groupName("cancel-no-metrics")
+            .bufferSize(10)
+            .metrics(null)
+            .build();
+
+    PersistentSubscription mockSub = mock(PersistentSubscription.class);
+    ArgumentCaptor<PersistentSubscriptionListener> listenerCaptor =
+        ArgumentCaptor.forClass(PersistentSubscriptionListener.class);
+
+    when(subscriptionClient.subscribeToAll(
+        eq("cancel-no-metrics"), any(SubscribePersistentSubscriptionOptions.class),
+        listenerCaptor.capture()))
+        .thenReturn(CompletableFuture.completedFuture(mockSub));
+
+    source.start();
+    assertThat(source.isRunning()).isTrue();
+
+    // Trigger cancellation with error but no metrics
+    listenerCaptor.getValue().onCancelled(mockSub, new RuntimeException("connection lost"));
+
+    assertThat(source.isRunning()).isFalse();
+  }
 }

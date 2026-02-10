@@ -581,4 +581,254 @@ class EventStoreDBTokenStoreTest {
 
         verify(claimManager).claimSegment("proc", 0, null);
     }
+
+    // ── Metrics branch coverage ─────────────────────────────────────────
+
+    @Test
+    void shouldRecordMetricsOnStoreToken() throws Exception {
+        io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics metrics =
+            mock(io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+        EventStoreDBTokenStore storeWithMetrics =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, metrics);
+
+        WriteResult writeResult = mock(WriteResult.class);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(100L, 100L);
+        storeWithMetrics.storeToken(token, "proc", 0);
+
+        verify(metrics).recordTokenOperation("store");
+    }
+
+    @Test
+    void shouldRecordMetricsErrorOnStoreTokenFailure() {
+        io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics metrics =
+            mock(io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+        EventStoreDBTokenStore storeWithMetrics =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, metrics);
+
+        CompletableFuture<WriteResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(failFuture);
+
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(100L, 100L);
+        assertThatThrownBy(() -> storeWithMetrics.storeToken(token, "proc", 0))
+                .isInstanceOf(EventStoreException.class);
+
+        verify(metrics).recordError("storeToken");
+    }
+
+    @Test
+    void shouldRecordMetricsOnFetchToken() throws Exception {
+        io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics metrics =
+            mock(io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+        EventStoreDBTokenStore storeWithMetrics =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, metrics);
+
+        // First store a token to have something to fetch
+        WriteResult writeResult = mock(WriteResult.class);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(CompletableFuture.completedFuture(writeResult));
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(100L, 100L);
+        storeWithMetrics.storeToken(token, "proc", 0);
+
+        // Now mock read to return a token
+        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+        om.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        om.registerSubtypes(EventStoreDBTrackingToken.class);
+        byte[] tokenData = om.writeValueAsBytes(new java.util.LinkedHashMap<>(java.util.Map.of(
+                "processorName", "proc",
+                "segmentId", 0,
+                "token", java.util.Map.of("@class", "io.github.bsakweson.axon.eventstoredb.EventStoreDBTrackingToken", "commitPosition", 100, "preparePosition", 100),
+                "owner", "test-node",
+                "timestamp", java.time.Instant.now().toString()
+        )));
+
+        RecordedEvent recorded = mock(RecordedEvent.class);
+        when(recorded.getEventData()).thenReturn(tokenData);
+        ResolvedEvent resolved = mock(ResolvedEvent.class);
+        when(resolved.getOriginalEvent()).thenReturn(recorded);
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(resolved));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        storeWithMetrics.fetchToken("proc", 0);
+
+        verify(metrics).recordTokenOperation("fetch");
+    }
+
+    @Test
+    void shouldRecordMetricsErrorOnFetchTokenFailure() {
+        io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics metrics =
+            mock(io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+        EventStoreDBTokenStore storeWithMetrics =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, metrics);
+
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(failFuture);
+
+        assertThatThrownBy(() -> storeWithMetrics.fetchToken("proc", 0))
+                .isInstanceOf(EventStoreException.class);
+
+        verify(metrics).recordError("fetchToken");
+    }
+
+    @Test
+    void shouldRecordMetricsOnDeleteToken() throws Exception {
+        io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics metrics =
+            mock(io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics.class);
+        EventStoreDBTokenStore storeWithMetrics =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, metrics);
+
+        DeleteResult deleteResult = mock(DeleteResult.class);
+        when(client.deleteStream(anyString(), any(DeleteStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(deleteResult));
+
+        storeWithMetrics.deleteToken("proc", 0);
+
+        verify(metrics).recordTokenOperation("delete");
+    }
+
+    // ── isStreamNotFound branch coverage ─────────────────────────────────
+
+    @Test
+    void shouldTreatMessageBasedNotFoundAsStreamNotFound() {
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("stream not found in EventStoreDB"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(failFuture);
+
+        // Should return null (not throw) because isStreamNotFound returns true
+        TrackingToken result = tokenStore.fetchToken("proc", 0);
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void shouldStopScanningSegmentsOnNonStreamNotFoundError() {
+        // Segment 0 exists
+        ReadResult readResult = mock(ReadResult.class);
+        ResolvedEvent resolved = mock(ResolvedEvent.class);
+        when(readResult.getEvents()).thenReturn(List.of(resolved));
+
+        // Segment 1 fails with non-stream-not-found error
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection refused"));
+
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult))
+                .thenReturn(failFuture);
+
+        // fetchSegments should continue past non-fatal errors for i > 0
+        int[] segments = tokenStore.fetchSegments("proc");
+        assertThat(segments).contains(0);
+    }
+
+    @Test
+    void shouldThrowOnInitializeAppendInterruption() {
+        // Mock readStream to throw StreamNotFound so we proceed to append
+        CompletableFuture<ReadResult> readFuture = new CompletableFuture<>();
+        readFuture.completeExceptionally(
+            StreamNotFoundExceptionFactory.create("stream"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(readFuture);
+
+        // Mock appendToStream to return an unresolved future (blocks on .get())
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(new CompletableFuture<>());
+
+        // Set interrupt flag — readStream.get() won't see it (future already failed)
+        // but appendToStream.get() WILL detect it when it tries to wait
+        Thread.currentThread().interrupt();
+
+        try {
+            assertThatThrownBy(() -> tokenStore.initializeTokenSegments("proc", 1))
+                    .isInstanceOf(EventStoreException.class)
+                    .hasMessageContaining("Interrupted during token initialization");
+        } finally {
+            Thread.interrupted(); // clear interrupt flag to avoid affecting other tests
+        }
+    }
+
+    // ── initializeTokenSegments additional branch coverage ───────────────
+
+    @Test
+    void shouldSkipAlreadyInitializedSegmentDuringInit() throws Exception {
+        // Segment 0 already has events
+        ReadResult readResult = mock(ReadResult.class);
+        ResolvedEvent resolved = mock(ResolvedEvent.class);
+        when(readResult.getEvents()).thenReturn(List.of(resolved));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        // Should complete without appending (segment already initialized)
+        tokenStore.initializeTokenSegments("proc", 1);
+
+        verify(client, never())
+                .appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class));
+    }
+
+    @Test
+    void shouldHandleWrongExpectedVersionOnInit() throws Exception {
+        // readStream throws SNF → proceed to append
+        CompletableFuture<ReadResult> readFuture = new CompletableFuture<>();
+        readFuture.completeExceptionally(
+            StreamNotFoundExceptionFactory.create("stream"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(readFuture);
+
+        // appendToStream fails with WrongExpectedVersion (concurrent init by another node)
+        WrongExpectedVersionException wrongVersion = mock(WrongExpectedVersionException.class);
+        CompletableFuture<WriteResult> appendFuture = new CompletableFuture<>();
+        appendFuture.completeExceptionally(wrongVersion);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(appendFuture);
+
+        // Should not throw — handled gracefully as "already initialized by another node"
+        assertThatCode(() -> tokenStore.initializeTokenSegments("proc", 1))
+                .doesNotThrowAnyException();
+    }
+
+    // ── fetchToken with claimManager coverage ────────────────────────────
+
+    @Test
+    void shouldSkipReClaimWhenAlreadyClaimedByThisNode() throws Exception {
+        DistributedTokenClaimManager claimMgr = mock(DistributedTokenClaimManager.class);
+        when(claimMgr.isClaimedByThisNode("proc", 0)).thenReturn(true);
+
+        EventStoreDBTokenStore storeWithClaims = new EventStoreDBTokenStore(
+                client, naming, "test-node", null, null, claimMgr);
+
+        // readStream returns empty → null token
+        CompletableFuture<ReadResult> snfFuture = new CompletableFuture<>();
+        snfFuture.completeExceptionally(
+            StreamNotFoundExceptionFactory.create("stream"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(snfFuture);
+
+        TrackingToken result = storeWithClaims.fetchToken("proc", 0);
+        assertThat(result).isNull();
+
+        // claimSegment should NOT be called (already claimed by this node)
+        verify(claimMgr, never()).claimSegment(anyString(), anyInt(), any());
+    }
+
+    // ── isStreamNotFound null cause/message coverage ─────────────────────
+
+    @Test
+    void shouldNotTreatNullMessageAsStreamNotFound() {
+        // ExecutionException with a cause that has null message
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException((String) null));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+                .thenReturn(failFuture);
+
+        // fetchSegments with i=0: non-SNF error → break loop
+        int[] segments = tokenStore.fetchSegments("proc");
+        assertThat(segments).isEmpty();
+    }
 }

@@ -197,4 +197,66 @@ class EventStoreDBRetryExecutorTest {
         //  backoff=1 → jitterRange=0 → returns backoff
         assertThat(executor.applyJitter(1)).isEqualTo(1);
     }
+
+    // ── Additional branch coverage ──────────────────────────────────────
+
+    @Test
+    void shouldRetryOnExecutionExceptionWithNullCause() throws Exception {
+        RetryPolicy policy = RetryPolicy.builder()
+                .maxRetries(2)
+                .initialBackoffMs(1)
+                .maxBackoffMs(5)
+                .multiplier(1.0)
+                .build();
+        EventStoreDBRetryExecutor executor = new EventStoreDBRetryExecutor(policy);
+
+        AtomicInteger attempts = new AtomicInteger(0);
+        String result = executor.execute(() -> {
+            if (attempts.incrementAndGet() < 2) {
+                throw new ExecutionException(null);  // null cause → isRetryable returns true
+            }
+            return "ok";
+        }, "test-op");
+
+        assertThat(result).isEqualTo("ok");
+        assertThat(attempts.get()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldWrapGenericExceptionInNoRetryMode() {
+        EventStoreDBRetryExecutor executor = EventStoreDBRetryExecutor.noRetry();
+
+        assertThatThrownBy(() -> executor.execute(
+                (Callable<String>) () -> {
+                    throw new RuntimeException("unexpected");
+                },
+                "test-op"))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage("unexpected");
+    }
+
+    @Test
+    void shouldExhaustRetriesOnGenericException() {
+        RetryPolicy policy = RetryPolicy.builder()
+                .maxRetries(1)
+                .initialBackoffMs(1)
+                .maxBackoffMs(5)
+                .multiplier(1.0)
+                .build();
+        EventStoreDBRetryExecutor executor = new EventStoreDBRetryExecutor(policy);
+
+        AtomicInteger attempts = new AtomicInteger(0);
+        assertThatThrownBy(() -> executor.execute(
+                (Callable<String>) () -> {
+                    attempts.incrementAndGet();
+                    throw new RuntimeException("persistent failure");
+                },
+                "test-op"))
+                .isInstanceOf(ExecutionException.class)
+                .hasCauseInstanceOf(RuntimeException.class);
+
+        // initial + 1 retry = 2 attempts
+        assertThat(attempts.get()).isEqualTo(2);
+    }
 }

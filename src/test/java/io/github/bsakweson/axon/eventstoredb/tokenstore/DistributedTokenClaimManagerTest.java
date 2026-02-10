@@ -443,6 +443,141 @@ class DistributedTokenClaimManagerTest {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
+  private DistributedTokenClaimManager claimManagerWithoutMetrics() {
+    return new DistributedTokenClaimManager(
+        client, naming, "node-1", Duration.ofSeconds(30), null, null);
+  }
+
+  // ── No-metrics branch coverage ────────────────────────────────────────
+
+  @Test
+  void shouldClaimSegmentWithoutMetrics() throws Exception {
+    DistributedTokenClaimManager noMetrics = claimManagerWithoutMetrics();
+
+    CompletableFuture<ReadResult> readFuture = new CompletableFuture<>();
+    readFuture.completeExceptionally(
+        StreamNotFoundExceptionFactory.create("claim-stream"));
+    when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+        .thenReturn(readFuture);
+
+    WriteResult writeResult = mock(WriteResult.class);
+    when(client.appendToStream(
+            anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+        .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+    assertThatCode(() -> noMetrics.claimSegment("proc", 0,
+        EventStoreDBTrackingToken.of(10L, 10L)))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void shouldExtendClaimWithoutMetrics() throws Exception {
+    DistributedTokenClaimManager noMetrics = claimManagerWithoutMetrics();
+
+    DistributedTokenClaimManager.ClaimEntry existing =
+        new DistributedTokenClaimManager.ClaimEntry(
+            "proc", 0, EventStoreDBTrackingToken.of(10L, 10L),
+            "node-1", Instant.now(), false);
+    byte[] data = objectMapper.writeValueAsBytes(existing);
+
+    RecordedEvent recorded = mock(RecordedEvent.class);
+    when(recorded.getEventData()).thenReturn(data);
+    ResolvedEvent resolved = mock(ResolvedEvent.class);
+    when(resolved.getOriginalEvent()).thenReturn(recorded);
+    ReadResult readResult = mock(ReadResult.class);
+    when(readResult.getEvents()).thenReturn(List.of(resolved));
+    when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+        .thenReturn(CompletableFuture.completedFuture(readResult));
+
+    WriteResult writeResult = mock(WriteResult.class);
+    when(client.appendToStream(
+            anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+        .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+    assertThatCode(() -> noMetrics.extendClaim("proc", 0))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void shouldReleaseClaimWithoutMetrics() throws Exception {
+    DistributedTokenClaimManager noMetrics = claimManagerWithoutMetrics();
+
+    WriteResult writeResult = mock(WriteResult.class);
+    when(client.appendToStream(
+            anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+        .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+    assertThatCode(() -> noMetrics.releaseClaim("proc", 0))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void shouldNotTreatNullCauseAsStreamNotFound() {
+    // claimSegment reads the claim stream — if it fails with null cause,
+    // isStreamNotFound should return true (null cause → retryable, not SNF)
+    CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+    failFuture.completeExceptionally(new RuntimeException((String) null));
+    when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+        .thenReturn(failFuture);
+
+    // The exception with null message is NOT "not found" → treated as error
+    assertThatThrownBy(() ->
+        claimManager.claimSegment("proc", 0, EventStoreDBTrackingToken.of(1L, 1L)))
+        .isInstanceOf(EventStoreException.class);
+  }
+
+  @Test
+  void shouldThrowOnInvalidClaimEntryDeserialization() {
+    // readLatestClaim receives corrupt event data → IOException
+    RecordedEvent badRecorded = mock(RecordedEvent.class);
+    when(badRecorded.getEventData()).thenReturn(new byte[]{0x00});
+    ResolvedEvent badEvent = mock(ResolvedEvent.class);
+    when(badEvent.getOriginalEvent()).thenReturn(badRecorded);
+    ReadResult readResult = mock(ReadResult.class);
+    when(readResult.getEvents()).thenReturn(List.of(badEvent));
+    when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+        .thenReturn(CompletableFuture.completedFuture(readResult));
+
+    assertThatThrownBy(() ->
+        claimManager.claimSegment("proc", 0, EventStoreDBTrackingToken.of(1L, 1L)))
+        .isInstanceOf(EventStoreException.class)
+        .hasMessageContaining("Failed to deserialize claim entry");
+  }
+
+  @Test
+  void shouldThrowOnReadClaimInterruption() {
+    // readLatestClaim blocks on readStream.get() → interrupted
+    when(client.readStream(anyString(), any(ReadStreamOptions.class)))
+        .thenReturn(new CompletableFuture<>());
+
+    Thread.currentThread().interrupt();
+    try {
+      assertThatThrownBy(() ->
+          claimManager.claimSegment("proc", 0, EventStoreDBTrackingToken.of(1L, 1L)))
+          .isInstanceOf(EventStoreException.class)
+          .hasMessageContaining("Interrupted while reading claim");
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
+  @Test
+  void shouldThrowOnReleaseClaimInterruption() {
+    // releaseClaim blocks on appendToStream.get() → interrupted
+    when(client.appendToStream(
+            anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+        .thenReturn(new CompletableFuture<>());
+
+    Thread.currentThread().interrupt();
+    try {
+      assertThatThrownBy(() -> claimManager.releaseClaim("proc", 0))
+          .isInstanceOf(EventStoreException.class)
+          .hasMessageContaining("Interrupted while releasing claim");
+    } finally {
+      Thread.interrupted();
+    }
+  }
+
   private void mockReadLatestClaim(DistributedTokenClaimManager.ClaimEntry entry)
       throws Exception {
     byte[] data = objectMapper.writeValueAsBytes(entry);

@@ -1214,4 +1214,283 @@ class EventStoreDBEventStorageEngineTest {
             this.data = data;
         }
     }
+
+    // ── Metrics branch coverage ─────────────────────────────────────────
+
+    @Test
+    void shouldRecordMetricsOnAppendEvents() throws Exception {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        DomainEventMessage<?> event = new GenericDomainEventMessage<>(
+                "Order", "order-1", 0L, new TestPayload("test"));
+
+        WriteResult writeResult = mock(WriteResult.class);
+        ExpectedRevision nextRev = mock(ExpectedRevision.class);
+        when(nextRev.toRawLong()).thenReturn(0L);
+        when(writeResult.getNextExpectedRevision()).thenReturn(nextRev);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+        engineWithMetrics.appendEvents(List.of(event));
+
+        verify(metrics).recordEventsAppended(1);
+    }
+
+    @Test
+    void shouldRecordMetricsErrorOnAppendFailure() {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        DomainEventMessage<?> event = new GenericDomainEventMessage<>(
+                "Order", "order-1", 0L, new TestPayload("test"));
+
+        CompletableFuture<WriteResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(failFuture);
+
+        assertThatThrownBy(() -> engineWithMetrics.appendEvents(List.of(event)))
+                .isInstanceOf(EventStoreException.class);
+
+        verify(metrics).recordError("append");
+    }
+
+    @Test
+    void shouldRecordMetricsErrorOnStoreSnapshotFailure() {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        DomainEventMessage<?> snapshot = new GenericDomainEventMessage<>(
+                "Order", "order-1", 5L, new TestPayload("snap"));
+
+        CompletableFuture<WriteResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(failFuture);
+
+        assertThatThrownBy(() -> engineWithMetrics.storeSnapshot(snapshot))
+                .isInstanceOf(EventStoreException.class);
+
+        verify(metrics).recordError("storeSnapshot");
+    }
+
+    @Test
+    void shouldRecordMetricsOnReadTrackedEvents() throws Exception {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(Collections.emptyList());
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        Stream<? extends TrackedEventMessage<?>> result =
+                engineWithMetrics.readEvents((TrackingToken) null, false);
+        assertThat(result.count()).isZero();
+
+        verify(metrics).recordEventsRead(0);
+    }
+
+    @Test
+    void shouldRecordMetricsErrorOnReadTrackedEventsFailure() {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.readAll(any(ReadAllOptions.class))).thenReturn(failFuture);
+
+        assertThatThrownBy(() -> engineWithMetrics.readEvents((TrackingToken) null, false))
+                .isInstanceOf(EventStoreException.class);
+
+        verify(metrics).recordError("readTrackedEvents");
+    }
+
+    // ── isStreamNotFound message-based fallback ─────────────────────────
+
+    @Test
+    void shouldHandleMessageBasedStreamNotFound() throws Exception {
+        // ExecutionException wrapping RuntimeException("stream not found") 
+        // instead of StreamNotFoundException
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("stream not found in EventStoreDB"));
+
+        // readAll for findStreamForAggregate returns empty
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(Collections.emptyList());
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        DomainEventStream result = engine.readEvents("unknown-agg");
+
+        assertThat(result.asStream().count()).isZero();
+    }
+
+    // ── Non-domain event in appendEvents ─────────────────────────────────
+
+    @Test
+    void shouldWarnOnNonDomainEvent() {
+        GenericEventMessage<TestPayload> nonDomainEvent =
+                new GenericEventMessage<>(new TestPayload("test"));
+
+        // Should not throw, just log warning
+        assertThatCode(() -> engine.appendEvents(List.of(nonDomainEvent)))
+                .doesNotThrowAnyException();
+    }
+
+    // ── Additional branch coverage round 2 ──────────────────────────────
+
+    @Test
+    void shouldRecordMetricsOnSnapshotStoreSuccess() throws Exception {
+        EventStoreDBMetrics metrics = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine engineWithMetrics =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256, null, null, metrics);
+
+        TestPayload payload = new TestPayload("snapshot-data");
+        GenericDomainEventMessage<TestPayload> snapshot =
+                new GenericDomainEventMessage<>("Order", "order-1", 5L, payload);
+
+        WriteResult writeResult = mock(WriteResult.class);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+                .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+        engineWithMetrics.storeSnapshot(snapshot);
+
+        verify(metrics).recordSnapshotStored();
+    }
+
+    @Test
+    void shouldThrowNonStreamNotFoundErrorInReadEvents() throws Exception {
+        String aggregateId = "order-err";
+
+        // findStreamForAggregate returns a valid stream name
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        // readStream fails with non-SNF error
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException("connection refused"));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(failFuture);
+
+        assertThatThrownBy(() -> engine.readEvents(aggregateId, 0))
+                .isInstanceOf(EventStoreException.class)
+                .hasMessageContaining("Failed to read events for aggregate");
+    }
+
+    @Test
+    void shouldReturnEmptyLastSequenceForEmptyStream() throws Exception {
+        String aggregateId = "order-empty";
+
+        // findStreamForAggregate returns a stream
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        // readStream returns empty events list (stream exists but empty)
+        ReadResult streamResult = mock(ReadResult.class);
+        when(streamResult.getEvents()).thenReturn(Collections.emptyList());
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(streamResult));
+
+        Optional<Long> seq = engine.lastSequenceNumberFor(aggregateId);
+        assertThat(seq).isEmpty();
+    }
+
+    @Test
+    void shouldNotTreatNullCauseAsStreamNotFound() {
+        // readAll returns an event pointing to a stream
+        String aggregateId = "order-null-cause";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        // readStream fails with ExecutionException whose cause has null message
+        CompletableFuture<ReadResult> failFuture = new CompletableFuture<>();
+        failFuture.completeExceptionally(new RuntimeException((String) null));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(failFuture);
+
+        assertThatThrownBy(() -> engine.lastSequenceNumberFor(aggregateId))
+                .isInstanceOf(EventStoreException.class);
+    }
+
+    @Test
+    void shouldSkipEventsBeforeTargetTimeInCreateTokenAt() throws Exception {
+        Instant targetTime = Instant.parse("2026-02-09T10:00:00Z");
+
+        // First event: BEFORE target time → should be skipped by the loop
+        ResolvedEvent earlyEvent = mock(ResolvedEvent.class);
+        RecordedEvent earlyRecorded = mock(RecordedEvent.class);
+        when(earlyEvent.getOriginalEvent()).thenReturn(earlyRecorded);
+        when(earlyRecorded.getCreated()).thenReturn(Instant.parse("2026-02-09T09:00:00Z"));
+
+        // Second event: AT target time → should match
+        ResolvedEvent matchEvent = mock(ResolvedEvent.class);
+        RecordedEvent matchRecorded = mock(RecordedEvent.class);
+        Position matchPos = new Position(500L, 500L);
+        when(matchEvent.getOriginalEvent()).thenReturn(matchRecorded);
+        when(matchRecorded.getCreated()).thenReturn(Instant.parse("2026-02-09T10:00:00Z"));
+        when(matchRecorded.getPosition()).thenReturn(matchPos);
+
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(earlyEvent, matchEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        TrackingToken token = engine.createTokenAt(targetTime);
+
+        assertThat(token).isNotNull().isInstanceOf(EventStoreDBTrackingToken.class);
+        EventStoreDBTrackingToken esdbToken = (EventStoreDBTrackingToken) token;
+        assertThat(esdbToken.getCommitPosition()).isEqualTo(499L);
+    }
+
+    @Test
+    void shouldSkipSystemAndNonMatchingStreamsInFindStream() throws Exception {
+        String aggregateId = "target-agg";
+
+        // System stream starting with $ → skipped
+        ResolvedEvent sysEvent = mockResolvedEvent("$et-OrderCreated");
+        // Axon internal stream → isSystemStream true → skipped
+        ResolvedEvent axonEvent = mockResolvedEvent("__axon-tokens-proc-0");
+        // Non-matching aggregate → doesn't end with aggregateId → skipped
+        ResolvedEvent otherEvent = mockResolvedEvent("Order-other-agg");
+        // Matching stream → returned
+        ResolvedEvent matchEvent = mock(ResolvedEvent.class);
+        RecordedEvent matchRecorded = mock(RecordedEvent.class);
+        when(matchEvent.getOriginalEvent()).thenReturn(matchRecorded);
+        when(matchRecorded.getStreamId()).thenReturn("Order-" + aggregateId);
+
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents())
+                .thenReturn(List.of(sysEvent, axonEvent, otherEvent, matchEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        // readStream for last event
+        ReadResult streamResult = mock(ReadResult.class);
+        ResolvedEvent lastEvent = mock(ResolvedEvent.class);
+        RecordedEvent lastRecorded = mock(RecordedEvent.class);
+        when(lastEvent.getOriginalEvent()).thenReturn(lastRecorded);
+        when(lastRecorded.getRevision()).thenReturn(5L);
+        when(streamResult.getEvents()).thenReturn(List.of(lastEvent));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(streamResult));
+
+        Optional<Long> seq = engine.lastSequenceNumberFor(aggregateId);
+        assertThat(seq).isPresent().contains(5L);
+    }
 }

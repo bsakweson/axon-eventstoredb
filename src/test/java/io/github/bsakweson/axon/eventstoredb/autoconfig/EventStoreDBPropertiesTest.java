@@ -118,4 +118,77 @@ class EventStoreDBPropertiesTest {
     assertTrue(props.getClaims().isEnabled());
     assertEquals(60, props.getClaims().getTimeoutSeconds());
   }
+
+  // ── Subscription configuration ────────────────────────────────────────
+
+  @Test
+  void shouldHaveSubscriptionDefaults() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+
+    assertNotNull(props.getSubscription());
+    assertFalse(props.getSubscription().isEnabled());
+    assertNull(props.getSubscription().getGroupName());
+    assertEquals(256, props.getSubscription().getBufferSize());
+    assertTrue(props.getSubscription().isCreateIfNotExists());
+  }
+
+  @Test
+  void shouldConfigureSubscriptionProperties() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    EventStoreDBProperties.Subscription sub = new EventStoreDBProperties.Subscription();
+    sub.setEnabled(true);
+    sub.setGroupName("my-group");
+    sub.setBufferSize(512);
+    sub.setCreateIfNotExists(false);
+    props.setSubscription(sub);
+
+    assertTrue(props.getSubscription().isEnabled());
+    assertEquals("my-group", props.getSubscription().getGroupName());
+    assertEquals(512, props.getSubscription().getBufferSize());
+    assertFalse(props.getSubscription().isCreateIfNotExists());
+  }
+
+  // ── Additional branch coverage ──────────────────────────────────────
+
+  @Test
+  void shouldIgnoreBlankConnectionStringAndBuildFromParts() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setConnectionString("   ");
+    props.setHost("eventstore.local");
+    props.setPort(2113);
+    props.setTls(false);
+    props.setUsername(null);
+    props.setPassword(null);
+
+    // Blank string should be ignored, falls through to host/port construction
+    String connString = props.getEffectiveConnectionString();
+    assertEquals("esdb://eventstore.local:2113?tls=false", connString);
+  }
+
+  @Test
+  void shouldOmitCredentialsWhenPasswordIsNull() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    props.setUsername("admin");
+    props.setPassword(null);
+    props.setHost("localhost");
+    props.setPort(2113);
+    props.setTls(false);
+
+    String connString = props.getEffectiveConnectionString();
+    assertFalse(connString.contains("@"));
+    assertEquals("esdb://localhost:2113?tls=false", connString);
+  }
+
+  @Test
+  void shouldReturnMetricsDefaults() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    assertNotNull(props.getMetrics());
+    assertTrue(props.getMetrics().isEnabled());
+  }
+
+  @Test
+  void shouldReturnRetryDefaults() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    assertNotNull(props.getRetry());
+  }
 }

@@ -78,6 +78,9 @@ public class EventStoreDBProperties {
   /** Distributed token claim configuration. */
   private Claims claims = new Claims();
 
+  /** Persistent subscription configuration. */
+  private Subscription subscription = new Subscription();
+
   // ── Getters / Setters ──────────────────────────────────────────────────
 
   public boolean isEnabled() {
@@ -206,6 +209,14 @@ public class EventStoreDBProperties {
 
   public void setClaims(Claims claims) {
     this.claims = claims;
+  }
+
+  public Subscription getSubscription() {
+    return subscription;
+  }
+
+  public void setSubscription(Subscription subscription) {
+    this.subscription = subscription;
   }
 
   /**
@@ -363,6 +374,71 @@ public class EventStoreDBProperties {
 
     public void setTimeoutSeconds(long timeoutSeconds) {
       this.timeoutSeconds = timeoutSeconds;
+    }
+  }
+
+  /**
+   * Persistent subscription configuration for push-based event processing.
+   *
+   * <p>When enabled, a {@code EventStoreDBPersistentSubscriptionMessageSource} bean is
+   * auto-created and can be used as a {@code StreamableMessageSource} for Axon tracking
+   * processors.
+   *
+   * <p>Example:
+   * <pre>
+   * axon:
+   *   eventstoredb:
+   *     subscription:
+   *       enabled: true
+   *       group-name: my-processor-group
+   *       buffer-size: 256
+   *       create-if-not-exists: true
+   * </pre>
+   */
+  public static class Subscription {
+
+    /** Whether persistent subscription source is enabled. Default: false. */
+    private boolean enabled = false;
+
+    /** The persistent subscription group name. Required when enabled. */
+    private String groupName;
+
+    /** Local event buffer size. Default: 256. */
+    private int bufferSize = 256;
+
+    /** Whether to automatically create the subscription if it doesn't exist. Default: true. */
+    private boolean createIfNotExists = true;
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    public String getGroupName() {
+      return groupName;
+    }
+
+    public void setGroupName(String groupName) {
+      this.groupName = groupName;
+    }
+
+    public int getBufferSize() {
+      return bufferSize;
+    }
+
+    public void setBufferSize(int bufferSize) {
+      this.bufferSize = bufferSize;
+    }
+
+    public boolean isCreateIfNotExists() {
+      return createIfNotExists;
+    }
+
+    public void setCreateIfNotExists(boolean createIfNotExists) {
+      this.createIfNotExists = createIfNotExists;
     }
   }
 }

@@ -1,8 +1,10 @@
 package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
 import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
+import io.github.bsakweson.axon.eventstoredb.subscriptions.EventStoreDBPersistentSubscriptionMessageSource;
 import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import com.eventstore.dbclient.EventStoreDBPersistentSubscriptionsClient;
 import org.axonframework.eventhandling.tokenstore.TokenStore;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
 import org.axonframework.serialization.Serializer;
@@ -14,6 +16,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class AxonEventStoreDBAutoConfigurationTest {
 
@@ -323,5 +326,194 @@ class AxonEventStoreDBAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(DistributedTokenClaimManager.class);
                 });
+    }
+
+    // ── Subscription configuration ──────────────────────────────────────
+
+    @Test
+    void shouldBindSubscriptionProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.subscription.enabled=true",
+                        "axon.eventstoredb.subscription.group-name=my-group",
+                        "axon.eventstoredb.subscription.buffer-size=512",
+                        "axon.eventstoredb.subscription.create-if-not-exists=false")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getSubscription().isEnabled()).isTrue();
+                    assertThat(props.getSubscription().getGroupName()).isEqualTo("my-group");
+                    assertThat(props.getSubscription().getBufferSize()).isEqualTo(512);
+                    assertThat(props.getSubscription().isCreateIfNotExists()).isFalse();
+                });
+    }
+
+    @Test
+    void shouldNotCreateSubscriptionSourceByDefault() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(
+                            EventStoreDBPersistentSubscriptionMessageSource.class);
+                });
+    }
+
+    @Test
+    void shouldNotCreateSubscriptionSourceWhenDisabled() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.subscription.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(
+                            EventStoreDBPersistentSubscriptionMessageSource.class);
+                });
+    }
+
+    @Test
+    void shouldUseDefaultSubscriptionValues() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getSubscription().isEnabled()).isFalse();
+                    assertThat(props.getSubscription().getBufferSize()).isEqualTo(256);
+                    assertThat(props.getSubscription().isCreateIfNotExists()).isTrue();
+                    assertThat(props.getSubscription().getGroupName()).isNull();
+                });
+    }
+
+    @Test
+    void shouldCreateSubscriptionSourceWhenEnabled() {
+        contextRunner
+                .withUserConfiguration(MockPersistentSubscriptionsClientConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.subscription.enabled=true",
+                        "axon.eventstoredb.subscription.group-name=test-group",
+                        "axon.eventstoredb.subscription.buffer-size=128",
+                        "axon.eventstoredb.subscription.create-if-not-exists=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(
+                            EventStoreDBPersistentSubscriptionMessageSource.class);
+                    EventStoreDBPersistentSubscriptionMessageSource source =
+                            context.getBean(EventStoreDBPersistentSubscriptionMessageSource.class);
+                    assertThat(source.getGroupName()).isEqualTo("test-group");
+                    assertThat(source.isRunning()).isFalse();
+                });
+    }
+
+    @Test
+    void shouldNotCreatePersistentSubscriptionsClientWhenDisabled() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(
+                            EventStoreDBPersistentSubscriptionsClient.class);
+                });
+    }
+
+    @Test
+    void shouldUseExistingPersistentSubscriptionsClientBean() {
+        contextRunner
+                .withUserConfiguration(MockPersistentSubscriptionsClientConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.subscription.enabled=true",
+                        "axon.eventstoredb.subscription.group-name=custom-group",
+                        "axon.eventstoredb.subscription.create-if-not-exists=false")
+                .run(context -> {
+                    // Should use the mock client, not create a real one
+                    assertThat(context).hasSingleBean(
+                            EventStoreDBPersistentSubscriptionsClient.class);
+                    assertThat(context).hasSingleBean(
+                            EventStoreDBPersistentSubscriptionMessageSource.class);
+                });
+    }
+
+    @Configuration
+    static class MockPersistentSubscriptionsClientConfiguration {
+        @Bean
+        public EventStoreDBPersistentSubscriptionsClient persistentSubscriptionsClient() {
+            EventStoreDBPersistentSubscriptionsClient client =
+                    mock(EventStoreDBPersistentSubscriptionsClient.class);
+            org.mockito.Mockito.when(client.createToAll(
+                    org.mockito.ArgumentMatchers.anyString(),
+                    org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+            return client;
+        }
+    }
+
+    // ── Additional branch coverage ──────────────────────────────────────
+
+    @Test
+    void shouldCreateEngineWithUpcasterAndMetrics() {
+        contextRunner
+                .withUserConfiguration(UpcasterAndMetricsConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EventStorageEngine.class);
+                });
+    }
+
+    @Test
+    void shouldCreateClaimManagerWithRandomNodeIdWhenNotSet() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.claims.enabled=true",
+                        "axon.eventstoredb.claims.timeout-seconds=30")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DistributedTokenClaimManager.class);
+                    DistributedTokenClaimManager mgr =
+                            context.getBean(DistributedTokenClaimManager.class);
+                    // nodeId should be a random UUID (not null)
+                    assertThat(mgr.getNodeId()).isNotNull();
+                    assertThat(mgr.getNodeId()).isNotBlank();
+                });
+    }
+
+    @Test
+    void shouldCreateSubscriptionSourceWithAutoCreateEnabled() {
+        contextRunner
+                .withUserConfiguration(MockPersistentSubscriptionsClientConfiguration.class)
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.subscription.enabled=true",
+                        "axon.eventstoredb.subscription.group-name=auto-create-group",
+                        "axon.eventstoredb.subscription.create-if-not-exists=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(
+                            EventStoreDBPersistentSubscriptionMessageSource.class);
+                });
+    }
+
+    @Configuration
+    static class UpcasterAndMetricsConfiguration {
+        @Bean
+        public org.axonframework.serialization.upcasting.event.EventUpcaster eventUpcaster() {
+            return stream -> stream;  // identity upcaster
+        }
+
+        @Bean
+        public io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics eventStoreDBMetrics() {
+            return new io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics(
+                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        }
     }
 }

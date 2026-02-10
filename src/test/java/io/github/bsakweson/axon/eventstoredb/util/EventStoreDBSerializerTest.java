@@ -414,6 +414,127 @@ class EventStoreDBSerializerTest {
         return recorded;
     }
 
+    // ── Additional branch coverage ──────────────────────────────────────
+
+    @Test
+    void shouldSerializeNonDomainEventWithoutAggregateMetadata() throws Exception {
+        TestEvent payload = new TestEvent("test", 1);
+        org.axonframework.eventhandling.GenericEventMessage<TestEvent> eventMessage =
+                new org.axonframework.eventhandling.GenericEventMessage<>(payload);
+
+        EventData eventData = serializer.serialize(eventMessage);
+        assertThat(eventData).isNotNull();
+
+        // Metadata should NOT contain aggregate fields
+        byte[] metaBytes = eventData.getUserMetadata();
+        ObjectNode meta = (ObjectNode) objectMapper.readTree(metaBytes);
+        assertThat(meta.has(EventStoreDBSerializer.META_AGGREGATE_TYPE)).isFalse();
+        assertThat(meta.has(EventStoreDBSerializer.META_AGGREGATE_ID)).isFalse();
+        assertThat(meta.has(EventStoreDBSerializer.META_AGGREGATE_SEQ)).isFalse();
+
+        // Should still have core metadata
+        assertThat(meta.has(EventStoreDBSerializer.META_MESSAGE_ID)).isTrue();
+        assertThat(meta.has(EventStoreDBSerializer.META_PAYLOAD_TYPE)).isTrue();
+        assertThat(meta.has(EventStoreDBSerializer.META_TIMESTAMP)).isTrue();
+    }
+
+    @Test
+    void shouldIncludePayloadRevisionWhenPresent() throws Exception {
+        TestEvent payload = new TestEvent("test", 1);
+        // Create a serializer that produces a revision
+        Serializer mockSerializer = mock(Serializer.class);
+        org.axonframework.serialization.SimpleSerializedType typeWithRevision =
+                new org.axonframework.serialization.SimpleSerializedType("TestEvent", "2");
+        org.axonframework.serialization.SimpleSerializedObject<byte[]> serializedPayload =
+                new org.axonframework.serialization.SimpleSerializedObject<>(
+                        "{\"name\":\"test\",\"value\":1}".getBytes(),
+                        byte[].class, typeWithRevision);
+        when(mockSerializer.serialize(any(), eq(byte[].class))).thenReturn(serializedPayload);
+
+        EventStoreDBSerializer serializerWithRevision = new EventStoreDBSerializer(mockSerializer);
+        GenericDomainEventMessage<TestEvent> domainEvent =
+                new GenericDomainEventMessage<>("Order", "order-1", 0L, payload);
+
+        EventData eventData = serializerWithRevision.serialize(domainEvent);
+        byte[] metaBytes = eventData.getUserMetadata();
+        ObjectNode meta = (ObjectNode) objectMapper.readTree(metaBytes);
+        assertThat(meta.has(EventStoreDBSerializer.META_PAYLOAD_REVISION)).isTrue();
+        assertThat(meta.get(EventStoreDBSerializer.META_PAYLOAD_REVISION).asText()).isEqualTo("2");
+    }
+
+    @Test
+    void shouldHandleSimpleClassNameWithoutPackage() throws Exception {
+        TestEvent payload = new TestEvent("test", 1);
+        // Create a serializer that returns a simple name (no dots)
+        Serializer mockSerializer = mock(Serializer.class);
+        org.axonframework.serialization.SimpleSerializedType simpleType =
+                new org.axonframework.serialization.SimpleSerializedType("TestEvent", null);
+        org.axonframework.serialization.SimpleSerializedObject<byte[]> serializedPayload =
+                new org.axonframework.serialization.SimpleSerializedObject<>(
+                        "{\"name\":\"test\",\"value\":1}".getBytes(),
+                        byte[].class, simpleType);
+        when(mockSerializer.serialize(any(), eq(byte[].class))).thenReturn(serializedPayload);
+
+        EventStoreDBSerializer serializerSimple = new EventStoreDBSerializer(mockSerializer);
+        GenericDomainEventMessage<TestEvent> domainEvent =
+                new GenericDomainEventMessage<>("Order", "order-1", 0L, payload);
+
+        EventData eventData = serializerSimple.serialize(domainEvent);
+        // Event type should remain "TestEvent" (no truncation since no dot)
+        assertThat(eventData.getEventType()).isEqualTo("TestEvent");
+    }
+
+    @Test
+    void shouldDeserializeWithoutPayloadRevisionField() throws Exception {
+        // Metadata JSON without axon-payload-revision
+        ObjectNode meta = objectMapper.createObjectNode();
+        meta.put(EventStoreDBSerializer.META_MESSAGE_ID, UUID.randomUUID().toString());
+        meta.put(EventStoreDBSerializer.META_PAYLOAD_TYPE, TestEvent.class.getName());
+        meta.put(EventStoreDBSerializer.META_TIMESTAMP, Instant.now().toString());
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_TYPE, "Order");
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_ID, "order-1");
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_SEQ, 0);
+
+        byte[] metaBytes = objectMapper.writeValueAsBytes(meta);
+        byte[] payloadBytes = "{\"name\":\"test\",\"value\":1}".getBytes();
+
+        RecordedEvent recorded = mockRecordedEvent(
+                payloadBytes, metaBytes, "Order-order-1", 0L,
+                TestEvent.class.getName(), UUID.randomUUID(), Instant.now());
+        ResolvedEvent resolved = mock(ResolvedEvent.class);
+        when(resolved.getOriginalEvent()).thenReturn(recorded);
+
+        DomainEventMessage<?> result = serializer.deserialize(resolved);
+        assertThat(result).isNotNull();
+        assertThat(result.getPayload()).isInstanceOf(TestEvent.class);
+    }
+
+    @Test
+    void shouldFallbackToRecordedEventTypeWhenMetaPayloadTypeMissing() throws Exception {
+        // Metadata JSON without axon-payload-type — should fall back to recorded.getEventType()
+        ObjectNode meta = objectMapper.createObjectNode();
+        meta.put(EventStoreDBSerializer.META_MESSAGE_ID, UUID.randomUUID().toString());
+        meta.put(EventStoreDBSerializer.META_TIMESTAMP, Instant.now().toString());
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_TYPE, "Order");
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_ID, "order-1");
+        meta.put(EventStoreDBSerializer.META_AGGREGATE_SEQ, 0);
+        // no META_PAYLOAD_TYPE field
+
+        byte[] metaBytes = objectMapper.writeValueAsBytes(meta);
+        byte[] payloadBytes = "{\"name\":\"test\",\"value\":1}".getBytes();
+
+        // recorded.getEventType() returns the FQCN as fallback
+        RecordedEvent recorded = mockRecordedEvent(
+                payloadBytes, metaBytes, "Order-order-1", 0L,
+                TestEvent.class.getName(), UUID.randomUUID(), Instant.now());
+        ResolvedEvent resolved = mock(ResolvedEvent.class);
+        when(resolved.getOriginalEvent()).thenReturn(recorded);
+
+        DomainEventMessage<?> result = serializer.deserialize(resolved);
+        assertThat(result).isNotNull();
+        assertThat(result.getPayload()).isInstanceOf(TestEvent.class);
+    }
+
     public static class TestEvent {
         public String name;
         public int value;
