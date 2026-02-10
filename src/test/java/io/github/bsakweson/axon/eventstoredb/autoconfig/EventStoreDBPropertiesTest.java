@@ -95,4 +95,27 @@ class EventStoreDBPropertiesTest {
     String connString = props.getEffectiveConnectionString();
     assertEquals("esdb://localhost:2113?tls=false", connString);
   }
+
+  // ── Claims configuration ──────────────────────────────────────────────
+
+  @Test
+  void shouldHaveClaimsDefaults() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+
+    assertNotNull(props.getClaims());
+    assertFalse(props.getClaims().isEnabled());
+    assertEquals(30, props.getClaims().getTimeoutSeconds());
+  }
+
+  @Test
+  void shouldConfigureClaimsProperties() {
+    EventStoreDBProperties props = new EventStoreDBProperties();
+    EventStoreDBProperties.Claims claims = new EventStoreDBProperties.Claims();
+    claims.setEnabled(true);
+    claims.setTimeoutSeconds(60);
+    props.setClaims(claims);
+
+    assertTrue(props.getClaims().isEnabled());
+    assertEquals(60, props.getClaims().getTimeoutSeconds());
+  }
 }

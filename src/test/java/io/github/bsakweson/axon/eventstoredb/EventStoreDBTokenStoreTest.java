@@ -1,6 +1,7 @@
 package io.github.bsakweson.axon.eventstoredb;
 
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
+import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.DeleteResult;
 import com.eventstore.dbclient.DeleteStreamOptions;
@@ -499,5 +500,85 @@ class EventStoreDBTokenStoreTest {
     void shouldUseDefaultNamingWhenNull() {
         EventStoreDBTokenStore store = new EventStoreDBTokenStore(client, null, "node-1");
         assertThat(store.retrieveStorageIdentifier()).isPresent();
+    }
+
+    // ── Distributed claim manager integration ───────────────────────────
+
+    @Test
+    void shouldDelegateExtendClaimToClaimManager() throws Exception {
+        DistributedTokenClaimManager claimManager = mock(DistributedTokenClaimManager.class);
+        EventStoreDBTokenStore storeWithClaims =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, null, claimManager);
+
+        storeWithClaims.extendClaim("proc", 0);
+
+        verify(claimManager).extendClaim("proc", 0);
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void shouldDelegateReleaseClaimToClaimManager() {
+        DistributedTokenClaimManager claimManager = mock(DistributedTokenClaimManager.class);
+        EventStoreDBTokenStore storeWithClaims =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, null, claimManager);
+
+        storeWithClaims.releaseClaim("proc", 0);
+
+        verify(claimManager).releaseClaim("proc", 0);
+    }
+
+    @Test
+    void shouldCheckClaimBeforeStoreToken() throws Exception {
+        DistributedTokenClaimManager claimManager = mock(DistributedTokenClaimManager.class);
+        when(claimManager.isClaimedByThisNode("proc", 0)).thenReturn(true);
+
+        EventStoreDBTokenStore storeWithClaims =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, null, claimManager);
+
+        WriteResult writeResult = mock(WriteResult.class);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+            .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(10L, 10L);
+        storeWithClaims.storeToken(token, "proc", 0);
+
+        // Should not attempt to claim since already claimed by this node
+        verify(claimManager, never()).claimSegment(anyString(), anyInt(), any());
+    }
+
+    @Test
+    void shouldAttemptClaimBeforeStoreTokenWhenNotOwned() throws Exception {
+        DistributedTokenClaimManager claimManager = mock(DistributedTokenClaimManager.class);
+        when(claimManager.isClaimedByThisNode("proc", 0)).thenReturn(false);
+
+        EventStoreDBTokenStore storeWithClaims =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, null, claimManager);
+
+        WriteResult writeResult = mock(WriteResult.class);
+        when(client.appendToStream(anyString(), any(AppendToStreamOptions.class), any(EventData.class)))
+            .thenReturn(CompletableFuture.completedFuture(writeResult));
+
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(10L, 10L);
+        storeWithClaims.storeToken(token, "proc", 0);
+
+        verify(claimManager).claimSegment("proc", 0, token);
+    }
+
+    @Test
+    void shouldAttemptClaimBeforeFetchToken() throws Exception {
+        DistributedTokenClaimManager claimManager = mock(DistributedTokenClaimManager.class);
+        when(claimManager.isClaimedByThisNode("proc", 0)).thenReturn(false);
+
+        EventStoreDBTokenStore storeWithClaims =
+            new EventStoreDBTokenStore(client, naming, "test-node", null, null, claimManager);
+
+        CompletableFuture<ReadResult> readFuture = new CompletableFuture<>();
+        readFuture.completeExceptionally(
+            StreamNotFoundExceptionFactory.create("stream"));
+        when(client.readStream(anyString(), any(ReadStreamOptions.class))).thenReturn(readFuture);
+
+        storeWithClaims.fetchToken("proc", 0);
+
+        verify(claimManager).claimSegment("proc", 0, null);
     }
 }

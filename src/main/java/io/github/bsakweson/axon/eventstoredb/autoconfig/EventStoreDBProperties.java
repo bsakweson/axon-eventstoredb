@@ -75,6 +75,9 @@ public class EventStoreDBProperties {
   /** Micrometer metrics configuration. */
   private Metrics metrics = new Metrics();
 
+  /** Distributed token claim configuration. */
+  private Claims claims = new Claims();
+
   // ── Getters / Setters ──────────────────────────────────────────────────
 
   public boolean isEnabled() {
@@ -197,6 +200,14 @@ public class EventStoreDBProperties {
     this.metrics = metrics;
   }
 
+  public Claims getClaims() {
+    return claims;
+  }
+
+  public void setClaims(Claims claims) {
+    this.claims = claims;
+  }
+
   /**
    * Builds the effective connection string, either from {@link #connectionString} if set, or from
    * individual host/port/tls properties.
@@ -312,6 +323,46 @@ public class EventStoreDBProperties {
 
     public void setEnabled(boolean enabled) {
       this.enabled = enabled;
+    }
+  }
+
+  /**
+   * Distributed token claim configuration for multi-node deployments.
+   *
+   * <p>When enabled, token claims are enforced using EventStoreDB's optimistic
+   * concurrency, ensuring only one node can process a given segment at a time.
+   *
+   * <p>Example:
+   * <pre>
+   * axon:
+   *   eventstoredb:
+   *     claims:
+   *       enabled: true
+   *       timeout-seconds: 30
+   * </pre>
+   */
+  public static class Claims {
+
+    /** Whether distributed claim management is enabled. Default: false. */
+    private boolean enabled = false;
+
+    /** Claim timeout in seconds. Default: 30. */
+    private long timeoutSeconds = 30;
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    public long getTimeoutSeconds() {
+      return timeoutSeconds;
+    }
+
+    public void setTimeoutSeconds(long timeoutSeconds) {
+      this.timeoutSeconds = timeoutSeconds;
     }
   }
 }

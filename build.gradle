@@ -10,7 +10,7 @@ plugins {
 }
 
 group = 'io.github.bsakweson'
-version = '0.2.2-SNAPSHOT-SNAPSHOT'
+version = '0.2.2-SNAPSHOT'
 description = 'Spring Boot starter for using EventStoreDB as an Axon Framework event store'
 
 dependencyManagement {
@@ -80,6 +80,7 @@ dependencies {
     testImplementation libs.mockito.core
     testImplementation libs.mockito.junit.jupiter
     testImplementation libs.testcontainers.junit.jupiter
+    testImplementation libs.awaitility
 }
 
 tasks.withType(Test).configureEach {

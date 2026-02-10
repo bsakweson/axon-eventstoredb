@@ -2,6 +2,7 @@ package io.github.bsakweson.axon.eventstoredb;
 
 import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
 import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
+import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.DeleteStreamOptions;
@@ -52,6 +53,12 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Connection Resilience</b> — configurable retry with exponential backoff</li>
  *   <li><b>Micrometer Metrics</b> — optional instrumentation of token operations</li>
  * </ul>
+ *
+ * <p><b>Phase 3 features:</b>
+ * <ul>
+ *   <li><b>Distributed Token Claims</b> — optional {@link DistributedTokenClaimManager} for
+ *       multi-node deployments with proper ownership tracking and expiry</li>
+ * </ul>
  */
 public class EventStoreDBTokenStore implements TokenStore {
 
@@ -65,6 +72,7 @@ public class EventStoreDBTokenStore implements TokenStore {
   private final String nodeId;
   private final EventStoreDBRetryExecutor retryExecutor;
   @Nullable private final EventStoreDBMetrics metrics;
+  @Nullable private final DistributedTokenClaimManager claimManager;
 
   /**
    * Creates a new token store (backward-compatible constructor).
@@ -73,7 +81,7 @@ public class EventStoreDBTokenStore implements TokenStore {
    * @param naming stream naming strategy
    */
   public EventStoreDBTokenStore(EventStoreDBClient client, EventStoreDBStreamNaming naming) {
-    this(client, naming, UUID.randomUUID().toString(), null, null);
+    this(client, naming, UUID.randomUUID().toString(), null, null, null);
   }
 
   /**
@@ -85,7 +93,7 @@ public class EventStoreDBTokenStore implements TokenStore {
    */
   public EventStoreDBTokenStore(
       EventStoreDBClient client, EventStoreDBStreamNaming naming, String nodeId) {
-    this(client, naming, nodeId, null, null);
+    this(client, naming, nodeId, null, null, null);
   }
 
   /**
@@ -103,12 +111,33 @@ public class EventStoreDBTokenStore implements TokenStore {
       String nodeId,
       @Nullable EventStoreDBRetryExecutor retryExecutor,
       @Nullable EventStoreDBMetrics metrics) {
+    this(client, naming, nodeId, retryExecutor, metrics, null);
+  }
+
+  /**
+   * Creates a new token store with Phase 3 distributed claims.
+   *
+   * @param client        the EventStoreDB gRPC client
+   * @param naming        stream naming strategy
+   * @param nodeId        unique node identifier for claim management
+   * @param retryExecutor optional retry executor (may be null)
+   * @param metrics       optional Micrometer metrics (may be null)
+   * @param claimManager  optional distributed claim manager (may be null)
+   */
+  public EventStoreDBTokenStore(
+      EventStoreDBClient client,
+      EventStoreDBStreamNaming naming,
+      String nodeId,
+      @Nullable EventStoreDBRetryExecutor retryExecutor,
+      @Nullable EventStoreDBMetrics metrics,
+      @Nullable DistributedTokenClaimManager claimManager) {
     this.client = client;
     this.naming = naming != null ? naming : new EventStoreDBStreamNaming();
     this.nodeId = nodeId;
     this.retryExecutor = retryExecutor != null
         ? retryExecutor : EventStoreDBRetryExecutor.noRetry();
     this.metrics = metrics;
+    this.claimManager = claimManager;
     this.objectMapper = new ObjectMapper();
     this.objectMapper.registerModule(new JavaTimeModule());
     this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -122,6 +151,11 @@ public class EventStoreDBTokenStore implements TokenStore {
   @Override
   public void storeToken(TrackingToken token, String processorName, int segment)
       throws UnableToClaimTokenException {
+    // Validate distributed claim ownership when enabled
+    if (claimManager != null && !claimManager.isClaimedByThisNode(processorName, segment)) {
+      claimManager.claimSegment(processorName, segment, token);
+    }
+
     String streamName = tokenStreamName(processorName, segment);
 
     TokenEntry entry =
@@ -162,6 +196,11 @@ public class EventStoreDBTokenStore implements TokenStore {
   @Override
   public TrackingToken fetchToken(String processorName, int segment)
       throws UnableToClaimTokenException {
+    // Validate distributed claim ownership when enabled
+    if (claimManager != null && !claimManager.isClaimedByThisNode(processorName, segment)) {
+      claimManager.claimSegment(processorName, segment, null);
+    }
+
     String streamName = tokenStreamName(processorName, segment);
 
     try {
@@ -312,6 +351,11 @@ public class EventStoreDBTokenStore implements TokenStore {
   @Override
   public void extendClaim(String processorName, int segment)
       throws UnableToClaimTokenException {
+    if (claimManager != null) {
+      claimManager.extendClaim(processorName, segment);
+      return;
+    }
+    // Basic fallback: re-store the current token to update the timestamp
     TrackingToken current = fetchToken(processorName, segment);
     if (current != null) {
       storeToken(current, processorName, segment);
@@ -320,6 +364,10 @@ public class EventStoreDBTokenStore implements TokenStore {
 
   @Override
   public void releaseClaim(String processorName, int segment) {
+    if (claimManager != null) {
+      claimManager.releaseClaim(processorName, segment);
+      return;
+    }
     log.trace("Released claim for processor '{}' segment {}", processorName, segment);
   }
 

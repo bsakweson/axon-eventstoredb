@@ -1,6 +1,7 @@
 package io.github.bsakweson.axon.eventstoredb.autoconfig;
 
 import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
+import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import org.axonframework.eventhandling.tokenstore.TokenStore;
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine;
@@ -265,6 +266,62 @@ class AxonEventStoreDBAutoConfigurationTest {
                 .run(context -> {
                     EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
                     assertThat(props.getMetrics().isEnabled()).isFalse();
+                });
+    }
+
+    // ── Claims configuration ────────────────────────────────────────────
+
+    @Test
+    void shouldBindClaimsProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.claims.enabled=true",
+                        "axon.eventstoredb.claims.timeout-seconds=60")
+                .run(context -> {
+                    EventStoreDBProperties props = context.getBean(EventStoreDBProperties.class);
+                    assertThat(props.getClaims().isEnabled()).isTrue();
+                    assertThat(props.getClaims().getTimeoutSeconds()).isEqualTo(60);
+                });
+    }
+
+    @Test
+    void shouldCreateClaimManagerWhenEnabled() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.claims.enabled=true",
+                        "axon.eventstoredb.node-id=test-node")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DistributedTokenClaimManager.class);
+                    DistributedTokenClaimManager mgr =
+                            context.getBean(DistributedTokenClaimManager.class);
+                    assertThat(mgr.getNodeId()).isEqualTo("test-node");
+                });
+    }
+
+    @Test
+    void shouldNotCreateClaimManagerWhenDisabled() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false",
+                        "axon.eventstoredb.claims.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(DistributedTokenClaimManager.class);
+                });
+    }
+
+    @Test
+    void shouldNotCreateClaimManagerByDefault() {
+        contextRunner
+                .withPropertyValues(
+                        "axon.eventstoredb.enabled=true",
+                        "axon.eventstoredb.connection-string=esdb://localhost:2113?tls=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(DistributedTokenClaimManager.class);
                 });
     }
 }

@@ -20,6 +20,8 @@ A Spring Boot starter that integrates [EventStoreDB](https://www.eventstore.com/
 - **Event Upcasting** — Axon's `EventUpcaster` chain applied during event reads
 - **Connection Resilience** — Configurable retry with exponential backoff and jitter
 - **Micrometer Metrics** — Optional instrumentation of append/read/token operations
+- **Persistent Subscriptions** — EventStoreDB push-based subscriptions with competing consumers
+- **Distributed Token Claims** — Multi-node claim management using EventStoreDB optimistic concurrency
 
 ## Requirements
 
@@ -37,7 +39,7 @@ A Spring Boot starter that integrates [EventStoreDB](https://www.eventstore.com/
 **Gradle:**
 
 ```groovy
-implementation 'io.github.bsakweson:axon-eventstoredb:0.1.0'
+implementation 'io.github.bsakweson:axon-eventstoredb:0.2.2'
 ```
 
 **Maven:**
@@ -46,7 +48,7 @@ implementation 'io.github.bsakweson:axon-eventstoredb:0.1.0'
 <dependency>
     <groupId>io.github.bsakweson</groupId>
     <artifactId>axon-eventstoredb</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.2</version>
 </dependency>
 ```
 
@@ -107,6 +109,8 @@ Events are stored in stream `Order-{orderId}` in EventStoreDB.
 | `axon.eventstoredb.retry.max-backoff-ms` | `5000` | Maximum backoff cap in milliseconds |
 | `axon.eventstoredb.retry.multiplier` | `2.0` | Backoff multiplier per retry |
 | `axon.eventstoredb.metrics.enabled` | `true` | Enable Micrometer metrics (requires `micrometer-core`) |
+| `axon.eventstoredb.claims.enabled` | `false` | Enable distributed token claim management |
+| `axon.eventstoredb.claims.timeout-seconds` | `30` | Claim expiry timeout in seconds |
 
 ## Architecture
 
@@ -134,7 +138,13 @@ graph TD
 
             serializer["EventStoreDB<br/>Serializer"]
             style serializer fill:#e8f8e8,stroke:#5cb85c,rx:10,ry:10,color:#1a1a1a
+
+            claimutil["Distributed<br/>TokenClaimManager"]
+            style claimutil fill:#fef9e7,stroke:#f0c040,rx:10,ry:10,color:#1a1a1a
         end
+
+        persub["Persistent<br/>Subscription Source"]
+        style persub fill:#dceefb,stroke:#4a90d9,rx:10,ry:10,color:#1a1a1a
 
         client["EventStoreDB Client<br/><i>db-client-java 5.x</i>"]
         style client fill:#f5eef8,stroke:#8e44ad,rx:10,ry:10,color:#1a1a1a
@@ -146,8 +156,12 @@ graph TD
     agg --> axon
     axon --> engine
     axon --> tokenstore
+    axon --> persub
     engine --> client
     tokenstore --> client
+    tokenstore --> claimutil
+    claimutil --> client
+    persub --> client
     serializer -.-> engine
     client -- "gRPC" --> esdb
 ```
@@ -173,6 +187,11 @@ graph LR
         subgraph token_streams["Token Streams"]
             style token_streams fill:#f5eef8,stroke:#8e44ad,rx:12,ry:12,color:#1a1a1a
             s4["__axon-tokens-OrderProj-0"]
+        end
+
+        subgraph claim_streams["Claim Streams"]
+            style claim_streams fill:#fef9e7,stroke:#f0c040,rx:12,ry:12,color:#1a1a1a
+            s7["__axon-tokens-OrderProj-claim-0"]
         end
 
         subgraph system_streams["System Streams (automatic)"]
@@ -308,16 +327,111 @@ graph TD
             ded["EventStoreDBDomainEventData"]
             ted["EventStoreDBTrackedDomainEventData"]
         end
+
+        subgraph subscriptions["Subscriptions"]
+            style subscriptions fill:#dceefb,stroke:#4a90d9,rx:12,ry:12,color:#1a1a1a
+            psub["PersistentSubscriptionMessageSource"]
+        end
+
+        subgraph tokenclm["Token Claims"]
+            style tokenclm fill:#fef9e7,stroke:#f0c040,rx:12,ry:12,color:#1a1a1a
+            clm["DistributedTokenClaimManager"]
+        end
     end
 
     autoconf --> engine2
     autoconf --> token2
+    autoconf --> clm
     engine2 --> tracking
     engine2 --> ser
     engine2 --> naming
     engine2 --> retryExec
     engine2 --> ded
     token2 --> retryExec
+    token2 --> clm
+    psub --> ser
+    clm --> retryExec
+    clm --> met
+```
+
+## Persistent Subscriptions
+
+The library provides an Axon `StreamableMessageSource` backed by EventStoreDB's [persistent subscriptions](https://developers.eventstore.com/clients/grpc/persistent-subscriptions.html). This enables **competing-consumer** patterns where multiple application nodes process events from the `$all` stream without duplicating work.
+
+> **Note:** Persistent subscriptions require manual bean wiring (no auto-configuration). This is by design — the group name, buffer size, and filter options are application-specific and should be configured explicitly.
+
+### Configuration
+
+```java
+@Bean
+public EventStoreDBPersistentSubscriptionMessageSource persistentSource(
+        EventStoreDBPersistentSubscriptionsClient client,
+        Serializer serializer) {
+    return EventStoreDBPersistentSubscriptionMessageSource.builder()
+            .client(client)
+            .serializer(serializer)
+            .groupName("my-processor-group")
+            .bufferSize(256)
+            .createSubscriptionIfNotExists(true)
+            .build();
+}
+```
+
+Then register it with an Axon tracking processor:
+
+```java
+configurer.registerTrackingEventProcessor("myProcessor",
+        conf -> persistentSource);
+```
+
+### How Subscription Works
+
+1. **Subscription creation** — On first `start()`, the source creates a persistent subscription to `$all` in EventStoreDB (idempotent — ignores "already exists").
+2. **Push-based delivery** — EventStoreDB pushes events to connected consumers. No polling needed.
+3. **Competing consumers** — Multiple application instances can subscribe to the same group. EventStoreDB distributes events across them.
+4. **Acknowledgement** — Events are acknowledged after successful processing; failures trigger a `nack` with `Retry` action.
+
+## Distributed Token Claims
+
+When running multiple nodes of the same Axon application, tracking processors need coordination to avoid duplicate event processing. The `DistributedTokenClaimManager` uses EventStoreDB streams with optimistic concurrency to implement distributed claims.
+
+### Enable via Configuration
+
+```yaml
+axon:
+  eventstoredb:
+    claims:
+      enabled: true
+      timeout-seconds: 30
+```
+
+When enabled, a `DistributedTokenClaimManager` bean is created and wired into the `TokenStore` automatically.
+
+### How Event Claims Work
+
+1. **Claim acquisition** — Before a node processes a segment, it writes an `AxonTokenClaim` event to a claim stream (e.g. `__axon-tokens-MyProcessor-claim-0`). EventStoreDB's optimistic concurrency prevents two nodes from claiming simultaneously.
+2. **Claim expiry** — Claims include a timestamp. If a node crashes, its claims expire after `timeout-seconds` and other nodes can take over.
+3. **Claim extension** — Active processors periodically extend their claims to prevent expiry.
+4. **Claim release** — When a processor shuts down gracefully, it writes an `AxonTokenRelease` event.
+
+### Claim Stream Layout
+
+```mermaid
+graph LR
+    subgraph claimstreams["Claim Streams"]
+        style claimstreams fill:#fef9e7,stroke:#f0c040,rx:12,ry:12,color:#1a1a1a
+        cs1["__axon-tokens-OrderProj-claim-0"]
+        cs2["__axon-tokens-OrderProj-claim-1"]
+    end
+
+    subgraph events["Claim Events"]
+        style events fill:#e8f8e8,stroke:#5cb85c,rx:12,ry:12,color:#1a1a1a
+        e1["AxonTokenClaim<br/><i>owner: node-1, ts: T1</i>"]
+        e2["AxonTokenClaim<br/><i>owner: node-1, ts: T2</i>"]
+        e3["AxonTokenRelease<br/><i>owner: node-1, ts: T3</i>"]
+    end
+
+    cs1 --> e1 --> e2 --> e3
 ```
 
 ## Dependencies
@@ -393,8 +507,8 @@ graph LR
             p2c["Micrometer Metrics"]
         end
 
-        subgraph phase3["Phase 3 — Advanced"]
-            style phase3 fill:#f5eef8,stroke:#8e44ad,rx:12,ry:12,color:#1a1a1a
+        subgraph phase3["Phase 3 — Advanced (Done)"]
+            style phase3 fill:#e8f8e8,stroke:#5cb85c,rx:12,ry:12,color:#1a1a1a
             p3a["Persistent Subscriptions"]
             p3b["Distributed Token Claims"]
             p3c["Maven Central Publish"]

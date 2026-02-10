@@ -5,11 +5,13 @@ import io.github.bsakweson.axon.eventstoredb.EventStoreDBTokenStore;
 import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
 import io.github.bsakweson.axon.eventstoredb.resilience.EventStoreDBRetryExecutor;
 import io.github.bsakweson.axon.eventstoredb.resilience.RetryPolicy;
+import io.github.bsakweson.axon.eventstoredb.tokenstore.DistributedTokenClaimManager;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.EventStoreDBClient;
 import com.eventstore.dbclient.EventStoreDBClientSettings;
 import com.eventstore.dbclient.EventStoreDBConnectionString;
 
+import java.time.Duration;
 import java.util.UUID;
 
 import org.axonframework.eventhandling.tokenstore.TokenStore;
@@ -125,18 +127,42 @@ public class AxonEventStoreDBAutoConfiguration {
   // ── Token Store ────────────────────────────────────────────────────────
 
   @Bean
+  @ConditionalOnMissingBean(DistributedTokenClaimManager.class)
+  @ConditionalOnProperty(
+      prefix = "axon.eventstoredb.claims", name = "enabled", havingValue = "true")
+  public DistributedTokenClaimManager distributedTokenClaimManager(
+      EventStoreDBClient client,
+      EventStoreDBStreamNaming streamNaming,
+      EventStoreDBProperties properties,
+      EventStoreDBRetryExecutor retryExecutor,
+      @Autowired(required = false) EventStoreDBMetrics metrics) {
+
+    String nodeId = properties.getNodeId() != null
+        ? properties.getNodeId()
+        : UUID.randomUUID().toString();
+    Duration claimTimeout = Duration.ofSeconds(properties.getClaims().getTimeoutSeconds());
+
+    log.info("Configuring distributed token claim manager (nodeId={}, timeout={}s)",
+        nodeId, properties.getClaims().getTimeoutSeconds());
+
+    return new DistributedTokenClaimManager(
+        client, streamNaming, nodeId, claimTimeout, retryExecutor, metrics);
+  }
+
+  @Bean
   @ConditionalOnMissingBean(TokenStore.class)
   public TokenStore tokenStore(
       EventStoreDBClient client,
       EventStoreDBStreamNaming streamNaming,
       EventStoreDBProperties properties,
       EventStoreDBRetryExecutor retryExecutor,
-      @Autowired(required = false) EventStoreDBMetrics metrics) {
+      @Autowired(required = false) EventStoreDBMetrics metrics,
+      @Autowired(required = false) DistributedTokenClaimManager claimManager) {
     String nodeId = properties.getNodeId() != null
         ? properties.getNodeId()
         : UUID.randomUUID().toString();
     return new EventStoreDBTokenStore(
-        client, streamNaming, nodeId, retryExecutor, metrics);
+        client, streamNaming, nodeId, retryExecutor, metrics, claimManager);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────

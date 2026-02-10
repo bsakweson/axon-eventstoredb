@@ -1,5 +1,6 @@
 package io.github.bsakweson.axon.eventstoredb;
 
+import io.github.bsakweson.axon.eventstoredb.metrics.EventStoreDBMetrics;
 import io.github.bsakweson.axon.eventstoredb.util.EventStoreDBStreamNaming;
 import com.eventstore.dbclient.AppendToStreamOptions;
 import com.eventstore.dbclient.EventData;
@@ -34,6 +35,7 @@ import org.axonframework.eventsourcing.eventstore.DomainEventStream;
 import org.axonframework.eventsourcing.eventstore.EventStoreException;
 import org.axonframework.serialization.Serializer;
 import org.axonframework.serialization.json.JacksonSerializer;
+import org.axonframework.serialization.upcasting.event.EventUpcaster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -831,6 +833,373 @@ class EventStoreDBEventStorageEngineTest {
         assertThatThrownBy(() -> engine.createTokenAt(Instant.now()))
                 .isInstanceOf(EventStoreException.class)
                 .hasMessageContaining("Failed to create token at timestamp");
+    }
+
+    // ── Upcasting paths ────────────────────────────────────────────────
+
+    @Test
+    void shouldReadEventsUsingUpcasterChainWhenConfigured() throws Exception {
+        EventUpcaster passThrough = stream -> stream;
+        EventStoreDBEventStorageEngine upcasterEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        passThrough, null, null);
+
+        String aggregateId = "order-upc";
+        // findStreamForAggregate
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+
+        // readStream
+        ResolvedEvent streamEvent = mockValidResolvedEvent("Order-" + aggregateId, aggregateId);
+        ReadResult streamResult = mock(ReadResult.class);
+        when(streamResult.getEvents()).thenReturn(List.of(streamEvent));
+
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(streamResult));
+
+        DomainEventStream result = upcasterEngine.readEvents(aggregateId, 0);
+        assertThat(result.asStream().toList()).hasSize(1);
+    }
+
+    @Test
+    void shouldReadTrackedEventsUsingUpcasterChainWhenConfigured() throws Exception {
+        EventUpcaster passThrough = stream -> stream;
+        EventStoreDBEventStorageEngine upcasterEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        passThrough, null, null);
+
+        ResolvedEvent event = mockValidResolvedEvent("Order-track1", "track1");
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(event));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        Stream<? extends TrackedEventMessage<?>> events = upcasterEngine.readEvents(null, false);
+        List<? extends TrackedEventMessage<?>> list = events.toList();
+
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).trackingToken()).isInstanceOf(EventStoreDBTrackingToken.class);
+    }
+
+    @Test
+    void shouldFilterSystemStreamsInUpcasterTrackedPath() throws Exception {
+        EventUpcaster passThrough = stream -> stream;
+        EventStoreDBEventStorageEngine upcasterEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        passThrough, null, null);
+
+        ResolvedEvent systemEvent = mock(ResolvedEvent.class);
+        RecordedEvent systemRecorded = mock(RecordedEvent.class);
+        when(systemEvent.getOriginalEvent()).thenReturn(systemRecorded);
+        when(systemRecorded.getStreamId()).thenReturn("$system-stream");
+
+        ResolvedEvent tokenEvent = mock(ResolvedEvent.class);
+        RecordedEvent tokenRecorded = mock(RecordedEvent.class);
+        when(tokenEvent.getOriginalEvent()).thenReturn(tokenRecorded);
+        when(tokenRecorded.getStreamId()).thenReturn("__axon-tokens-Proj-0");
+
+        ResolvedEvent validEvent = mockValidResolvedEvent("Order-filter1", "filter1");
+
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(systemEvent, tokenEvent, validEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        Stream<? extends TrackedEventMessage<?>> events = upcasterEngine.readEvents(null, false);
+        assertThat(events.toList()).hasSize(1);
+    }
+
+    // ── readEvents error branches ───────────────────────────────────────
+
+    @Test
+    void shouldThrowOnReadEventsInterruption() throws Exception {
+        String aggregateId = "order-int";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        CompletableFuture<ReadResult> hangingFuture = new CompletableFuture<>();
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(hangingFuture);
+
+        Thread testThread = Thread.currentThread();
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // expected
+            }
+            testThread.interrupt();
+        }).start();
+
+        assertThatThrownBy(() -> engine.readEvents(aggregateId, 0))
+                .isInstanceOf(EventStoreException.class);
+        Thread.interrupted();
+    }
+
+    // ── readLatestSnapshot error branches ────────────────────────────────
+
+    @Test
+    void shouldThrowOnReadLatestSnapshotInterruption() throws Exception {
+        String aggregateId = "order-snap-int";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        CompletableFuture<ReadResult> hangingFuture = new CompletableFuture<>();
+        when(client.readStream(eq("__snapshot-Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(hangingFuture);
+
+        Thread testThread = Thread.currentThread();
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // expected
+            }
+            testThread.interrupt();
+        }).start();
+
+        assertThatThrownBy(() -> engine.readSnapshot(aggregateId))
+                .isInstanceOf(EventStoreException.class);
+        Thread.interrupted();
+    }
+
+    @Test
+    void shouldThrowOnReadLatestSnapshotNonStreamNotFoundError() throws Exception {
+        String aggregateId = "order-snap-err";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        CompletableFuture<ReadResult> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("connection lost"));
+        when(client.readStream(eq("__snapshot-Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(failedFuture);
+
+        assertThatThrownBy(() -> engine.readSnapshot(aggregateId))
+                .isInstanceOf(EventStoreException.class)
+                .hasMessageContaining("Failed to read snapshot");
+    }
+
+    // ── lastSequenceNumberFor error branches ────────────────────────────
+
+    @Test
+    void shouldThrowOnLastSequenceNumberNonStreamNotFoundError() throws Exception {
+        String aggregateId = "order-seq-err";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        CompletableFuture<ReadResult> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("i/o error"));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(failedFuture);
+
+        assertThatThrownBy(() -> engine.lastSequenceNumberFor(aggregateId))
+                .isInstanceOf(EventStoreException.class)
+                .hasMessageContaining("Failed to read last sequence number");
+    }
+
+    @Test
+    void shouldThrowOnLastSequenceNumberInterruption() throws Exception {
+        String aggregateId = "order-seq-int";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+
+        CompletableFuture<ReadResult> hangingFuture = new CompletableFuture<>();
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(hangingFuture);
+
+        Thread testThread = Thread.currentThread();
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // expected
+            }
+            testThread.interrupt();
+        }).start();
+
+        assertThatThrownBy(() -> engine.lastSequenceNumberFor(aggregateId))
+                .isInstanceOf(EventStoreException.class);
+        Thread.interrupted();
+    }
+
+    // ── readEvents(tracking) with metrics ───────────────────────────────
+
+    @Test
+    void shouldRecordMetricsOnTrackedEventsRead() throws Exception {
+        EventStoreDBMetrics metricsObj = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine metricsEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        null, null, metricsObj);
+
+        ResolvedEvent event = mockValidResolvedEvent("Order-m1", "m1");
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(event));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        metricsEngine.readEvents(null, false).toList();
+        verify(metricsObj).recordEventsRead(1);
+    }
+
+    @Test
+    void shouldRecordErrorMetricsOnTrackedEventsFail() throws Exception {
+        EventStoreDBMetrics metricsObj = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine metricsEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        null, null, metricsObj);
+
+        CompletableFuture<ReadResult> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("fail"));
+        when(client.readAll(any(ReadAllOptions.class))).thenReturn(failedFuture);
+
+        assertThatThrownBy(() -> metricsEngine.readEvents(null, false))
+                .isInstanceOf(EventStoreException.class);
+        verify(metricsObj).recordError("readTrackedEvents");
+    }
+
+    @Test
+    void shouldRecordSnapshotReadMetric() throws Exception {
+        EventStoreDBMetrics metricsObj = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine metricsEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        null, null, metricsObj);
+
+        String aggregateId = "order-metr-snap";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+
+        ResolvedEvent snapEvent = mockValidResolvedEvent(
+                "__snapshot-Order-" + aggregateId, aggregateId);
+        ReadResult snapResult = mock(ReadResult.class);
+        when(snapResult.getEvents()).thenReturn(List.of(snapEvent));
+
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+        when(client.readStream(eq("__snapshot-Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(snapResult));
+
+        metricsEngine.readSnapshot(aggregateId);
+        verify(metricsObj).recordSnapshotRead();
+    }
+
+    @Test
+    void shouldRecordMetricsOnDomainEventsRead() throws Exception {
+        EventStoreDBMetrics metricsObj = mock(EventStoreDBMetrics.class);
+        EventStoreDBEventStorageEngine metricsEngine =
+                new EventStoreDBEventStorageEngine(client, axonSerializer, naming, 256,
+                        null, null, metricsObj);
+
+        String aggregateId = "order-metr-dom";
+        ResolvedEvent allEvent = mockResolvedEvent("Order-" + aggregateId);
+        ReadResult allResult = mock(ReadResult.class);
+        when(allResult.getEvents()).thenReturn(List.of(allEvent));
+
+        ResolvedEvent streamEvent = mockValidResolvedEvent("Order-" + aggregateId, aggregateId);
+        ReadResult streamResult = mock(ReadResult.class);
+        when(streamResult.getEvents()).thenReturn(List.of(streamEvent));
+
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(allResult));
+        when(client.readStream(eq("Order-" + aggregateId), any(ReadStreamOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(streamResult));
+
+        metricsEngine.readEvents(aggregateId, 0).asStream().toList();
+        verify(metricsObj).recordEventsRead(1);
+    }
+
+    // ── findStreamForAggregate error branch ─────────────────────────────
+
+    @Test
+    void shouldReturnEmptyWhenFindStreamForAggregateFails() throws Exception {
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenThrow(new RuntimeException("network failure"));
+
+        DomainEventStream result = engine.readEvents("some-id", 0);
+        assertThat(result.asStream().toList()).isEmpty();
+    }
+
+    // ── createTokenAt error branches ────────────────────────────────────
+
+    @Test
+    void shouldThrowOnCreateTokenAtInterruption() throws Exception {
+        CompletableFuture<ReadResult> hangingFuture = new CompletableFuture<>();
+        when(client.readAll(any(ReadAllOptions.class))).thenReturn(hangingFuture);
+
+        Thread testThread = Thread.currentThread();
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ignored) {
+                // expected
+            }
+            testThread.interrupt();
+        }).start();
+
+        assertThatThrownBy(() -> engine.createTokenAt(Instant.now()))
+                .isInstanceOf(EventStoreException.class);
+        Thread.interrupted();
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Creates a simple mock ResolvedEvent with just a stream ID.
+     * Used for findStreamForAggregate lookups.
+     */
+    private ResolvedEvent mockResolvedEvent(String streamId) {
+        ResolvedEvent event = mock(ResolvedEvent.class);
+        RecordedEvent recorded = mock(RecordedEvent.class);
+        when(event.getOriginalEvent()).thenReturn(recorded);
+        when(recorded.getStreamId()).thenReturn(streamId);
+        return event;
+    }
+
+    /**
+     * Creates a fully valid mock ResolvedEvent with serialized Axon metadata and payload.
+     */
+    private ResolvedEvent mockValidResolvedEvent(String streamId, String aggregateId) {
+        ResolvedEvent event = mock(ResolvedEvent.class);
+        RecordedEvent recorded = mock(RecordedEvent.class);
+        Position position = new Position(100L, 100L);
+
+        lenient().when(event.getOriginalEvent()).thenReturn(recorded);
+        lenient().when(recorded.getStreamId()).thenReturn(streamId);
+        lenient().when(recorded.getPosition()).thenReturn(position);
+        lenient().when(recorded.getEventId()).thenReturn(UUID.randomUUID());
+        lenient().when(recorded.getEventType()).thenReturn("TestPayload");
+        lenient().when(recorded.getRevision()).thenReturn(0L);
+        lenient().when(recorded.getCreated()).thenReturn(Instant.now());
+
+        byte[] payloadBytes = "{\"data\":\"test\"}".getBytes();
+        byte[] metadataBytes = ("{\"axon-message-id\":\"" + UUID.randomUUID()
+                + "\",\"axon-payload-type\":\"" + TestPayload.class.getName()
+                + "\",\"axon-timestamp\":\"" + Instant.now()
+                + "\",\"axon-aggregate-type\":\"Order\""
+                + ",\"axon-aggregate-id\":\"" + aggregateId + "\""
+                + ",\"axon-aggregate-seq\":0}").getBytes();
+        lenient().when(recorded.getEventData()).thenReturn(payloadBytes);
+        lenient().when(recorded.getUserMetadata()).thenReturn(metadataBytes);
+
+        return event;
     }
 
     // ── Test payload ────────────────────────────────────────────────────
