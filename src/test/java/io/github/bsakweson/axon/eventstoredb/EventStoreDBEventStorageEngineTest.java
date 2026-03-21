@@ -443,6 +443,95 @@ class EventStoreDBEventStorageEngineTest {
     }
 
     @Test
+    void shouldExcludeEventsAlreadyCoveredByTrackingToken() throws Exception {
+        // Simulate EventStoreDB's inclusive fromPosition() returning the event AT the token position
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(100L, 100L);
+        Position samePosition = new Position(100L, 100L);
+        Position newPosition = new Position(200L, 200L);
+
+        ResolvedEvent alreadyCovered = mock(ResolvedEvent.class);
+        RecordedEvent coveredRecorded = mock(RecordedEvent.class);
+        when(alreadyCovered.getOriginalEvent()).thenReturn(coveredRecorded);
+        when(coveredRecorded.getStreamId()).thenReturn("Order-order-1");
+        when(coveredRecorded.getPosition()).thenReturn(samePosition);
+        when(coveredRecorded.getEventId()).thenReturn(UUID.randomUUID());
+        when(coveredRecorded.getEventType()).thenReturn("TestPayload");
+        when(coveredRecorded.getRevision()).thenReturn(0L);
+        when(coveredRecorded.getCreated()).thenReturn(Instant.now());
+        String meta1 = "{\"axon-message-id\":\"" + UUID.randomUUID()
+                + "\",\"axon-payload-type\":\"" + TestPayload.class.getName()
+                + "\",\"axon-timestamp\":\"" + Instant.now()
+                + "\",\"axon-aggregate-type\":\"Order\""
+                + ",\"axon-aggregate-id\":\"order-1\""
+                + ",\"axon-aggregate-seq\":0}";
+        when(coveredRecorded.getEventData()).thenReturn("{\"data\":\"old\"}".getBytes());
+        when(coveredRecorded.getUserMetadata()).thenReturn(meta1.getBytes());
+
+        ResolvedEvent newEvent = mock(ResolvedEvent.class);
+        RecordedEvent newRecorded = mock(RecordedEvent.class);
+        when(newEvent.getOriginalEvent()).thenReturn(newRecorded);
+        when(newRecorded.getStreamId()).thenReturn("Order-order-2");
+        when(newRecorded.getPosition()).thenReturn(newPosition);
+        when(newRecorded.getEventId()).thenReturn(UUID.randomUUID());
+        when(newRecorded.getEventType()).thenReturn("TestPayload");
+        when(newRecorded.getRevision()).thenReturn(0L);
+        when(newRecorded.getCreated()).thenReturn(Instant.now());
+        String meta2 = "{\"axon-message-id\":\"" + UUID.randomUUID()
+                + "\",\"axon-payload-type\":\"" + TestPayload.class.getName()
+                + "\",\"axon-timestamp\":\"" + Instant.now()
+                + "\",\"axon-aggregate-type\":\"Order\""
+                + ",\"axon-aggregate-id\":\"order-2\""
+                + ",\"axon-aggregate-seq\":0}";
+        when(newRecorded.getEventData()).thenReturn("{\"data\":\"new\"}".getBytes());
+        when(newRecorded.getUserMetadata()).thenReturn(meta2.getBytes());
+
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(alreadyCovered, newEvent));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        List<? extends TrackedEventMessage<?>> result = engine.readEvents(token, false).toList();
+
+        assertThat(result).hasSize(1);
+        EventStoreDBTrackingToken resultToken =
+                (EventStoreDBTrackingToken) result.get(0).trackingToken();
+        assertThat(resultToken.getCommitPosition()).isEqualTo(200L);
+    }
+
+    @Test
+    void shouldReturnEmptyWhenOnlyEventIsAtTokenPosition() throws Exception {
+        // When caught up to stream head, the only event returned is at the token position
+        EventStoreDBTrackingToken token = EventStoreDBTrackingToken.of(100L, 100L);
+        Position samePosition = new Position(100L, 100L);
+
+        ResolvedEvent alreadyCovered = mock(ResolvedEvent.class);
+        RecordedEvent coveredRecorded = mock(RecordedEvent.class);
+        when(alreadyCovered.getOriginalEvent()).thenReturn(coveredRecorded);
+        when(coveredRecorded.getStreamId()).thenReturn("Order-order-1");
+        when(coveredRecorded.getPosition()).thenReturn(samePosition);
+        when(coveredRecorded.getEventId()).thenReturn(UUID.randomUUID());
+        when(coveredRecorded.getEventType()).thenReturn("TestPayload");
+        when(coveredRecorded.getRevision()).thenReturn(0L);
+        when(coveredRecorded.getCreated()).thenReturn(Instant.now());
+        String meta = "{\"axon-message-id\":\"" + UUID.randomUUID()
+                + "\",\"axon-payload-type\":\"" + TestPayload.class.getName()
+                + "\",\"axon-timestamp\":\"" + Instant.now()
+                + "\",\"axon-aggregate-type\":\"Order\""
+                + ",\"axon-aggregate-id\":\"order-1\""
+                + ",\"axon-aggregate-seq\":0}";
+        when(coveredRecorded.getEventData()).thenReturn("{\"data\":\"test\"}".getBytes());
+        when(coveredRecorded.getUserMetadata()).thenReturn(meta.getBytes());
+
+        ReadResult readResult = mock(ReadResult.class);
+        when(readResult.getEvents()).thenReturn(List.of(alreadyCovered));
+        when(client.readAll(any(ReadAllOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(readResult));
+
+        List<? extends TrackedEventMessage<?>> result = engine.readEvents(token, false).toList();
+        assertThat(result).isEmpty();
+    }
+
+    @Test
     void shouldThrowOnTrackedEventsReadFailure() throws Exception {
         CompletableFuture<ReadResult> failedFuture = new CompletableFuture<>();
         failedFuture.completeExceptionally(new RuntimeException("connection failed"));

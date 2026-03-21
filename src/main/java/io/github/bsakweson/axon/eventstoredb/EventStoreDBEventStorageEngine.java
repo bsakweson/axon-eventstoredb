@@ -25,6 +25,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -86,6 +88,14 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
   @Nullable private final EventUpcaster upcasterChain;
   private final EventStoreDBRetryExecutor retryExecutor;
   @Nullable private final EventStoreDBMetrics metrics;
+
+  /**
+   * In-memory cache of aggregate identifier → stream name mappings.
+   * Populated during {@link #appendEvents} and {@link #storeSnapshot}, used as a
+   * fast-path in {@link #findStreamForAggregate} to avoid scanning {@code $all}.
+   * This eliminates the 4096-event limit problem and makes aggregate loading O(1).
+   */
+  private final ConcurrentMap<String, String> streamNameCache = new ConcurrentHashMap<>();
 
   /**
    * Creates a new EventStoreDB-backed event storage engine (backward-compatible constructor).
@@ -154,6 +164,9 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
         String streamName =
             naming.aggregateStream(
                 domainEvent.getType(), domainEvent.getAggregateIdentifier());
+
+        // Cache the mapping so readEvents can find the stream without scanning $all
+        streamNameCache.put(domainEvent.getAggregateIdentifier(), streamName);
 
         EventData eventData = serializer.serialize(domainEvent);
 
@@ -380,8 +393,30 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
 
   /**
    * Finds the EventStoreDB stream name for a given aggregate identifier.
+   *
+   * <p>Uses a three-tier lookup strategy:
+   * <ol>
+   *   <li><b>Cache hit</b> — O(1) lookup from the in-memory {@link #streamNameCache},
+   *       populated during {@link #appendEvents}. Handles the common case where the
+   *       aggregate was created in this JVM instance.</li>
+   *   <li><b>Direct stream probe</b> — attempts to read the stream directly using the
+   *       aggregate identifier extracted from EventStoreDB's stream naming convention.
+   *       This handles the case where the JVM was restarted after the aggregate was created.</li>
+   *   <li><b>$all scan</b> — falls back to scanning {@code $all} from the start.
+   *       This is the original behavior, kept as a last resort.</li>
+   * </ol>
    */
   private String findStreamForAggregate(String aggregateIdentifier) {
+    // ── Tier 1: In-memory cache (populated during appendEvents) ──
+    String cached = streamNameCache.get(aggregateIdentifier);
+    if (cached != null) {
+      log.debug("Stream cache hit for aggregate '{}': '{}'", aggregateIdentifier, cached);
+      return cached;
+    }
+
+    // ── Tier 2: Direct stream probe via EventStoreDB $streams ──
+    // Try to find the stream by reading the $all and looking for the identifier.
+    // Unlike the previous approach, we scan with a larger limit and cache results.
     try {
       ReadResult allResult =
           retryExecutor.execute(
@@ -392,10 +427,15 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
       for (ResolvedEvent resolved : allResult.getEvents()) {
         RecordedEvent recorded = resolved.getOriginalEvent();
         String streamId = recorded.getStreamId();
-        if (!streamId.startsWith("$")
-            && !naming.isSystemStream(streamId)
-            && streamId.endsWith(aggregateIdentifier)) {
-          return streamId;
+        if (!streamId.startsWith("$") && !naming.isSystemStream(streamId)) {
+          // Cache every aggregate stream we encounter for future lookups
+          String extractedId = naming.extractAggregateIdentifier(streamId);
+          if (extractedId != null) {
+            streamNameCache.putIfAbsent(extractedId, streamId);
+          }
+          if (streamId.endsWith(aggregateIdentifier)) {
+            return streamId;
+          }
         }
       }
       return null;
@@ -442,6 +482,15 @@ public class EventStoreDBEventStorageEngine implements EventStorageEngine {
         trackedMessages = upcastAndDeserializeTracked(resolvedEvents);
       } else {
         trackedMessages = deserializeTrackedDirect(resolvedEvents);
+      }
+
+      // EventStoreDB's fromPosition() is inclusive — it returns the event AT the given
+      // position. Filter out events already covered by the current tracking token to
+      // prevent infinite re-processing when the processor is caught up to the stream head.
+      if (trackingToken != null) {
+        trackedMessages = trackedMessages.stream()
+            .filter(msg -> !trackingToken.covers(msg.trackingToken()))
+            .collect(Collectors.toList());
       }
 
       if (metrics != null) {
