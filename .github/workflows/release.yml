@@ -19,8 +19,7 @@ jobs:
   # ── Gate: run full CI first ───────────────────────────────────────────
   validate:
     name: Validate
-    runs-on: ubuntu-latest
-
+    runs-on: arc-runner-axon-eventstoredb
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +44,7 @@ jobs:
   # ── Release: publish to Maven Central + tag ───────────────────────────
   release:
     name: Publish & Tag
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-axon-eventstoredb
     needs: validate
 
     steps:
